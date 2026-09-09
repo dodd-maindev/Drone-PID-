@@ -1,0 +1,67 @@
+#pragma once
+#include <cmath>
+#include <array>
+#include <algorithm>
+
+namespace DroneMath {
+
+/**
+ * @brief Chuyển đổi góc Euler (roll, pitch, yaw theo radian) sang Quaternion [w, x, y, z]
+ */
+inline std::array<float, 4> euler_to_quaternion(float roll, float pitch, float yaw) {
+    float cy = std::cos(yaw * 0.5f);
+    float sy = std::sin(yaw * 0.5f);
+    float cp = std::cos(pitch * 0.5f);
+    float sp = std::sin(pitch * 0.5f);
+    float cr = std::cos(roll * 0.5f);
+    float sr = std::sin(roll * 0.5f);
+
+    float w = cr * cp * cy + sr * sp * sy;
+    float x = sr * cp * cy - cr * sp * sy;
+    float y = cr * sp * cy + sr * cp * sy;
+    float z = cr * cp * sy - sr * sp * cy;
+
+    return {w, x, y, z};
+}
+
+/**
+ * @brief Chuyển đổi Quaternion [w, x, y, z] sang góc Euler (roll, pitch, yaw theo radian)
+ */
+inline void quaternion_to_euler(float w, float x, float y, float z, float& roll, float& pitch, float& yaw) {
+    // Roll (x-axis rotation)
+    float sinr_cosp = 2.0f * (w * x + y * z);
+    float cosr_cosp = 1.0f - 2.0f * (x * x + y * y);
+    roll = std::atan2(sinr_cosp, cosr_cosp);
+
+    // Pitch (y-axis rotation)
+    float sinp = 2.0f * (w * y - z * x);
+    if (std::abs(sinp) >= 1.0f) {
+        pitch = std::copysign(static_cast<float>(M_PI / 2.0), sinp);
+    } else {
+        pitch = std::asin(sinp);
+    }
+
+    // Yaw (z-axis rotation)
+    float siny_cosp = 2.0f * (w * z + x * y);
+    float cosy_cosp = 1.0f - 2.0f * (y * y + z * z);
+    yaw = std::atan2(siny_cosp, cosy_cosp);
+}
+
+/**
+ * @brief Chuẩn hóa góc về khoảng [-PI, PI]
+ */
+inline float normalize_angle(float angle) {
+    while (angle > M_PI) angle -= 2.0f * M_PI;
+    while (angle < -M_PI) angle += 2.0f * M_PI;
+    return angle;
+}
+
+/**
+ * @brief Giới hạn giá trị trong khoảng [min_val, max_val]
+ */
+template<typename T>
+inline T clamp(T val, T min_val, T max_val) {
+    return std::max(min_val, std::min(val, max_val));
+}
+
+} // namespace DroneMath
