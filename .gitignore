@@ -17,7 +17,4 @@ bin/
 *.swp
 *~
 
-# Bỏ qua các bài thí nghiệm khác, chỉ giữ lại 02_pid_altitude_hold
-experiments/01_open_loop_thrust.cpp
-experiments/03_attitude_maneuver.cpp
-experiments/04_keyboard_teleop.cpp
+

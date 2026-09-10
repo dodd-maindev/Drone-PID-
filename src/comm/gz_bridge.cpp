@@ -36,7 +36,9 @@ bool GzBridge::init(DroneCore::VehicleState* state_ptr,
 void GzBridge::on_odometry(const gz::msgs::Odometry& msg) {
     if (!state_) return;
 
-    // Cập nhật độ cao và vận tốc tịnh tiến
+    // Cập nhật tọa độ 3D và vận tốc tịnh tiến
+    state_->pos_x.store(msg.pose().position().x());
+    state_->pos_y.store(msg.pose().position().y());
     state_->altitude.store(msg.pose().position().z());
     state_->vx.store(msg.twist().linear().x());
     state_->vy.store(msg.twist().linear().y());

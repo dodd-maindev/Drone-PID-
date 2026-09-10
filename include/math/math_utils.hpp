@@ -57,6 +57,20 @@ inline float normalize_angle(float angle) {
 }
 
 /**
+ * @brief Chuyển độ (degrees) sang radian
+ */
+inline float deg2rad(float deg) {
+    return deg * static_cast<float>(M_PI / 180.0);
+}
+
+/**
+ * @brief Chuyển radian sang độ (degrees)
+ */
+inline float rad2deg(float rad) {
+    return rad * static_cast<float>(180.0 / M_PI);
+}
+
+/**
  * @brief Giới hạn giá trị trong khoảng [min_val, max_val]
  */
 template<typename T>

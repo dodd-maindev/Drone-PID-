@@ -6,6 +6,7 @@
 #include "comm/gz_bridge.hpp"
 #include "controllers/motor_mixer.hpp"
 #include "core/vehicle_state.hpp"
+#include "utils/data_logger.hpp"
 
 namespace DroneCore {
 
@@ -32,12 +33,16 @@ public:
     // Truy cập dữ liệu trạng thái máy bay
     const VehicleState& state() const { return state_; }
 
+    // Quản lý logger dữ liệu
+    DroneUtils::DataLogger& logger() { return logger_; }
+
 private:
     void control_worker();
 
     DroneComm::GzBridge gz_bridge_;
     DroneControllers::MotorMixer mixer_;
     VehicleState state_;
+    DroneUtils::DataLogger logger_;
 
     std::atomic<float> target_roll_{0.0f};
     std::atomic<float> target_pitch_{0.0f};
@@ -46,6 +51,8 @@ private:
 
     std::atomic<bool> running_{false};
     std::thread control_thread_;
+    std::chrono::steady_clock::time_point start_time_;
+    uint64_t log_counter_{0};
 };
 
 } // namespace DroneCore

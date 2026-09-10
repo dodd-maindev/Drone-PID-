@@ -32,11 +32,13 @@ public:
             return speeds;
         }
 
-        // Phương trình trộn động cơ chuẩn xác cho x500 trong Gazebo
-        float u0 = thrust - roll - pitch + yaw; // Front-Right (CCW)
-        float u1 = thrust + roll + pitch + yaw; // Rear-Left   (CCW)
-        float u2 = thrust + roll - pitch - yaw; // Front-Left  (CW)
-        float u3 = thrust - roll + pitch - yaw; // Rear-Right  (CW)
+        // Phương trình trộn động cơ chuẩn xác cho x500 trong Gazebo:
+        // - Cánh CCW (0, 1) có dấu -yaw: khi yaw lệch dương (quay trái), CCW tăng tốc sinh phản lực CW hãm lại
+        // - Cánh CW (2, 3) có dấu +yaw: khi yaw lệch dương, CW giảm tốc
+        float u0 = thrust - roll - pitch - yaw; // Front-Right (CCW)
+        float u1 = thrust + roll + pitch - yaw; // Rear-Left   (CCW)
+        float u2 = thrust + roll - pitch + yaw; // Front-Left  (CW)
+        float u3 = thrust - roll + pitch + yaw; // Rear-Right  (CW)
 
         std::array<float, 4> u = {u0, u1, u2, u3};
 

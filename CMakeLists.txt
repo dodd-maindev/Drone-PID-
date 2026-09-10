@@ -13,6 +13,7 @@ add_library(drone_lib STATIC
     src/comm/gz_bridge.cpp
     src/controllers/altitude_controller.cpp
     src/core/vehicle_commander.cpp
+    src/utils/data_logger.cpp
 )
 
 target_include_directories(drone_lib PUBLIC include)
@@ -28,18 +29,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experiments/02_pid_altitude_hold.cpp")
     target_link_libraries(02_pid_altitude_hold PRIVATE drone_lib)
 endif()
 
-# Các bài mở rộng khác (nếu có trong thư mục cục bộ)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experiments/01_open_loop_thrust.cpp")
-    add_executable(01_open_loop_thrust experiments/01_open_loop_thrust.cpp)
-    target_link_libraries(01_open_loop_thrust PRIVATE drone_lib)
-endif()
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experiments/03_attitude_maneuver.cpp")
-    add_executable(03_attitude_maneuver experiments/03_attitude_maneuver.cpp)
-    target_link_libraries(03_attitude_maneuver PRIVATE drone_lib)
-endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experiments/04_keyboard_teleop.cpp")
     add_executable(04_keyboard_teleop experiments/04_keyboard_teleop.cpp)
     target_link_libraries(04_keyboard_teleop PRIVATE drone_lib)
+endif()
+
+# Bài 5: Tự quay quanh trục đứng Yaw (Trái / Phải theo input)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experiments/05_yaw_rotation_control.cpp")
+    add_executable(05_yaw_rotation_control experiments/05_yaw_rotation_control.cpp)
+    target_link_libraries(05_yaw_rotation_control PRIVATE drone_lib)
 endif()

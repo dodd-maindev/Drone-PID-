@@ -16,6 +16,10 @@ bool VehicleCommander::start(int /*dummy_port*/) {
         return false;
     }
 
+    start_time_ = std::chrono::steady_clock::now();
+    log_counter_ = 0;
+    logger_.start("/home/do/drone_control_cpp/log", "flight_telemetry");
+
     running_ = true;
     control_thread_ = std::thread(&VehicleCommander::control_worker, this);
     return true;
@@ -29,6 +33,7 @@ void VehicleCommander::stop() {
             control_thread_.join();
         }
         gz_bridge_.shutdown();
+        logger_.stop();
     }
 }
 
@@ -68,6 +73,11 @@ void VehicleCommander::disarm() {
     state_.is_armed.store(false);
     target_thrust_.store(0.0f);
     gz_bridge_.send_motor_velocities({0.0f, 0.0f, 0.0f, 0.0f});
+    state_.motor_speed_0.store(0.0f);
+    state_.motor_speed_1.store(0.0f);
+    state_.motor_speed_2.store(0.0f);
+    state_.motor_speed_3.store(0.0f);
+    state_.current_thrust.store(0.0f);
 }
 
 void VehicleCommander::set_offboard_mode() {
@@ -84,13 +94,24 @@ void VehicleCommander::send_attitude_target(float roll, float pitch, float yaw, 
 void VehicleCommander::control_worker() {
     // Vòng lặp điều khiển tư thế & phân phối lực motor tần số ~200Hz (5ms)
     const float kp_att = 0.45f;
+    const float ki_att = 0.05f;
     const float kd_att = 0.08f;
-    const float kp_yaw = 0.35f;
-    const float kd_yaw = 0.06f;
+    const float kp_yaw = 0.30f;
+    const float kd_yaw = 0.15f;
+
+    float int_roll = 0.0f;
+    float int_pitch = 0.0f;
 
     while (running_) {
         if (!state_.is_armed.load() || target_thrust_.load() <= 0.02f) {
+            int_roll = 0.0f;
+            int_pitch = 0.0f;
             gz_bridge_.send_motor_velocities({0.0f, 0.0f, 0.0f, 0.0f});
+            state_.motor_speed_0.store(0.0f);
+            state_.motor_speed_1.store(0.0f);
+            state_.motor_speed_2.store(0.0f);
+            state_.motor_speed_3.store(0.0f);
+            state_.current_thrust.store(0.0f);
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
@@ -108,12 +129,16 @@ void VehicleCommander::control_worker() {
         float q_rate = state_.q.load();
         float r_rate = state_.r.load();
 
-        // 1. Tính toán sai số và mô-men phản hồi PD
+        // 1. Tính toán sai số và mô-men phản hồi PID tư thế
         float err_roll = r_cmd - r_cur;
-        float tau_roll = kp_att * err_roll - kd_att * p_rate;
+        int_roll += err_roll * 0.005f;
+        int_roll = DroneMath::clamp(int_roll, -0.05f, 0.05f); // Anti-windup
+        float tau_roll = kp_att * err_roll + ki_att * int_roll - kd_att * p_rate;
 
         float err_pitch = p_cmd - p_cur;
-        float tau_pitch = kp_att * err_pitch - kd_att * q_rate;
+        int_pitch += err_pitch * 0.005f;
+        int_pitch = DroneMath::clamp(int_pitch, -0.05f, 0.05f); // Anti-windup
+        float tau_pitch = kp_att * err_pitch + ki_att * int_pitch - kd_att * q_rate;
 
         float err_yaw = DroneMath::normalize_angle(y_cmd - y_cur);
         float tau_yaw = kp_yaw * err_yaw - kd_yaw * r_rate;
@@ -123,11 +148,58 @@ void VehicleCommander::control_worker() {
         tau_pitch = DroneMath::clamp(tau_pitch, -0.25f, 0.25f);
         tau_yaw = DroneMath::clamp(tau_yaw, -0.20f, 0.20f);
 
-        // 2. Chuyển đổi qua Motor Mixer thành vận tốc quay 4 cánh quạt
-        auto speeds = mixer_.compute_motor_speeds(t_cmd, tau_roll, tau_pitch, tau_yaw, true);
+        // Tự động bù hao hụt lực nâng do góc nghiêng thân (Tilt Compensation)
+        float cos_tilt = std::cos(r_cur) * std::cos(p_cur);
+        if (cos_tilt < 0.65f) cos_tilt = 0.65f;
+        float effective_thrust = t_cmd / cos_tilt;
 
-        // 3. Bơm lệnh tốc độ quay trực tiếp vào Gazebo Sim
+        // 2. Chuyển đổi qua Motor Mixer thành vận tốc quay 4 cánh quạt
+        auto speeds = mixer_.compute_motor_speeds(effective_thrust, tau_roll, tau_pitch, tau_yaw, true);
+
+        // 3. Cập nhật các chỉ số thực tế vào state_ để người dùng có thể đọc theo thời gian thực
+        state_.motor_speed_0.store(speeds[0]);
+        state_.motor_speed_1.store(speeds[1]);
+        state_.motor_speed_2.store(speeds[2]);
+        state_.motor_speed_3.store(speeds[3]);
+        state_.current_thrust.store(t_cmd);
+        state_.tau_roll.store(tau_roll);
+        state_.tau_pitch.store(tau_pitch);
+        state_.tau_yaw.store(tau_yaw);
+
+        // 4. Bơm lệnh tốc độ quay trực tiếp vào Gazebo Sim
         gz_bridge_.send_motor_velocities(speeds);
+
+        // 5. Ghi log các chỉ số thực tế sang file CSV (tần số 50Hz)
+        if (++log_counter_ % 4 == 0 && logger_.is_logging()) {
+            auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
+            DroneUtils::FlightLogEntry entry;
+            entry.time_s = elapsed;
+            entry.target_thrust = t_cmd;
+            entry.target_roll_deg = r_cmd * 180.0f / static_cast<float>(M_PI);
+            entry.target_pitch_deg = p_cmd * 180.0f / static_cast<float>(M_PI);
+            entry.target_yaw_deg = y_cmd * 180.0f / static_cast<float>(M_PI);
+
+            entry.actual_alt = state_.altitude.load();
+            entry.actual_vz = state_.vz.load();
+            entry.actual_roll_deg = r_cur * 180.0f / static_cast<float>(M_PI);
+            entry.actual_pitch_deg = p_cur * 180.0f / static_cast<float>(M_PI);
+            entry.actual_yaw_deg = y_cur * 180.0f / static_cast<float>(M_PI);
+
+            entry.rate_p = p_rate;
+            entry.rate_q = q_rate;
+            entry.rate_r = r_rate;
+
+            entry.tau_roll = tau_roll;
+            entry.tau_pitch = tau_pitch;
+            entry.tau_yaw = tau_yaw;
+
+            entry.w0 = speeds[0];
+            entry.w1 = speeds[1];
+            entry.w2 = speeds[2];
+            entry.w3 = speeds[3];
+
+            logger_.log(entry);
+        }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
