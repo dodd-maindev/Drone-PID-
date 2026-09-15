@@ -125,14 +125,10 @@ void spin_yaw_angle(DroneCore::VehicleCommander& drone,
         // 1. Giữ độ cao bằng PID
         float thrust = alt_controller.compute_thrust(target_altitude, current_alt, vz, dt);
 
-        // 2. Vi điều khiển giữ tâm quay X-Y tuyệt đối (không bị lệch tâm khi xoay)
-        float err_x = spin_center_x - drone.state().pos_x.load();
-        float err_y = spin_center_y - drone.state().pos_y.load();
-        float vx = drone.state().vx.load();
-        float vy = drone.state().vy.load();
-
-        float corr_pitch = DroneMath::clamp(0.6f * err_x - 0.8f * vx, -DroneMath::deg2rad(1.5f), DroneMath::deg2rad(1.5f));
-        float corr_roll  = DroneMath::clamp(-0.6f * err_y + 0.8f * vy, -DroneMath::deg2rad(1.5f), DroneMath::deg2rad(1.5f));
+        // 2. Khi đang quay quanh trục Yaw: giữ mặt phẳng thăng bằng tuyệt đối (Roll = 0, Pitch = 0)
+        // Mọi lệnh bù nghiêng dựa trên vận tốc body khi đang quay nhanh đều gây dao động cộng hưởng Coriolis làm rung lắc drone
+        float corr_roll = 0.0f;
+        float corr_pitch = 0.0f;
 
         // 3. Gửi lệnh tư thế
         drone.send_attitude_target(corr_roll, corr_pitch, current_target_yaw_rad, thrust);
@@ -181,15 +177,8 @@ void hold_position_and_heading(DroneCore::VehicleCommander& drone,
 
         float thrust = alt_controller.compute_thrust(target_altitude, current_alt, vz, dt);
 
-        float err_x = hold_x - drone.state().pos_x.load();
-        float err_y = hold_y - drone.state().pos_y.load();
-        float vx = drone.state().vx.load();
-        float vy = drone.state().vy.load();
-
-        float corr_pitch = DroneMath::clamp(0.8f * err_x - 1.0f * vx, -DroneMath::deg2rad(2.0f), DroneMath::deg2rad(2.0f));
-        float corr_roll  = DroneMath::clamp(-0.8f * err_y + 1.0f * vy, -DroneMath::deg2rad(2.0f), DroneMath::deg2rad(2.0f));
-
-        drone.send_attitude_target(corr_roll, corr_pitch, hold_yaw_rad, thrust);
+        // Giữ thăng bằng tuyệt đối (Roll = 0, Pitch = 0) để khóa hướng đích êm dịu, không bị rung lắc
+        drone.send_attitude_target(0.0f, 0.0f, hold_yaw_rad, thrust);
 
         float yaw_err_deg = DroneMath::rad2deg(DroneMath::normalize_angle(hold_yaw_rad - current_yaw_rad));
         std::cout << "Alt: " << std::fixed << std::setprecision(2) << current_alt << "m"
@@ -325,9 +314,38 @@ int main(int argc, char* argv[]) {
     drone.set_offboard_mode();
 
     // --- BƯỚC 1: CẤT CÁNH LÊN 2.0M VÀ KHÓA HƯỚNG BAN ĐẦU ---
+    std::cout << "\n[🚀 BƯỚC 1: CẤT CÁNH LÊN 2.0M (ÊM ÁI, THẲNG ĐỨNG)]..." << std::endl;
     float initial_yaw = drone.state().yaw.load();
-    hold_position_and_heading(drone, alt_controller, 2.0, initial_yaw, 5.0, 
-                              "🚀 BƯỚC 1: CẤT CÁNH LÊN 2.0M VÀ GIỮ VỮNG HƯỚNG BAN ĐẦU");
+    float take_x = drone.state().pos_x.load();
+    float take_y = drone.state().pos_y.load();
+
+    double current_target_alt = 0.0;
+    auto start_time = std::chrono::steady_clock::now();
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count() < 6.0) {
+        if (current_target_alt < 2.0) {
+            current_target_alt = std::min(2.0, current_target_alt + 0.025);
+        }
+
+        double current_alt = drone.state().altitude.load();
+        double vz = drone.state().vz.load();
+        float current_yaw_rad = drone.state().yaw.load();
+        double dt = 0.03;
+
+        float thrust = alt_controller.compute_thrust(current_target_alt, current_alt, vz, dt);
+
+        // Cất cánh thẳng đứng tuyệt đối, không nghiêng lắc
+        drone.send_attitude_target(0.0f, 0.0f, initial_yaw, thrust);
+
+        std::cout << "Alt: " << std::fixed << std::setprecision(2) << current_alt << "m"
+                  << " | Đặt: " << current_target_alt << "m"
+                  << " | Target Yaw: " << std::setw(6) << std::setprecision(1) << DroneMath::rad2deg(initial_yaw) << "°"
+                  << " | Motors: [" << static_cast<int>(drone.state().motor_speed_0.load()) << ", "
+                  << static_cast<int>(drone.state().motor_speed_1.load()) << ", "
+                  << static_cast<int>(drone.state().motor_speed_2.load()) << ", "
+                  << static_cast<int>(drone.state().motor_speed_3.load()) << "] rad/s\r" << std::flush;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
 
     // --- BƯỚC 2: THỰC HIỆN XOAY TRÒN QUANH TRỤC YAW ---
     std::string spin_title = total_turn_angle_deg >= 0.0f ? 
@@ -342,17 +360,21 @@ int main(int argc, char* argv[]) {
 
     // --- BƯỚC 4: HẠ CÁNH MƯỢT VỀ 0.0M ---
     std::cout << "\n\n[🛬] BƯỚC 4: HẠ CÁNH MƯỢT VỀ MẶT ĐẤT..." << std::endl;
-    double current_target_alt = 2.0;
-    while (current_target_alt > 0.08) {
-        current_target_alt -= 0.03;
+    double land_target_alt = 2.0;
+    while (land_target_alt > 0.05) {
+        land_target_alt -= 0.015;
         double current_alt = drone.state().altitude.load();
         double vz = drone.state().vz.load();
         double dt = 0.03;
 
-        float thrust = alt_controller.compute_thrust(current_target_alt, current_alt, vz, dt);
+        if (current_alt < 0.10) {
+            break;
+        }
+
+        float thrust = alt_controller.compute_thrust(land_target_alt, current_alt, vz, dt);
         drone.send_attitude_target(0.0f, 0.0f, final_yaw, thrust);
 
-        std::cout << "Target Alt: " << std::fixed << std::setprecision(2) << current_target_alt
+        std::cout << "Target Alt: " << std::fixed << std::setprecision(2) << land_target_alt
                   << "m | Actual: " << current_alt << "m | Thrust: " << thrust
                   << " | Motors: [" << static_cast<int>(drone.state().motor_speed_0.load()) << ", "
                   << static_cast<int>(drone.state().motor_speed_1.load()) << ", "

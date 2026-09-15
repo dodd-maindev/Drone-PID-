@@ -51,11 +51,29 @@ int main() {
         float vx = drone.state().vx.load();
         float vy = drone.state().vy.load();
 
-        // PD Position Control nhẹ nhàng giữ tâm (giới hạn max 2.5 độ)
-        float p_gain = 0.8f;
-        float d_gain = 1.0f;
-        corr_pitch = DroneMath::clamp(p_gain * err_x - d_gain * vx, -DroneMath::deg2rad(2.5f), DroneMath::deg2rad(2.5f));
-        corr_roll  = DroneMath::clamp(-p_gain * err_y + d_gain * vy, -DroneMath::deg2rad(2.5f), DroneMath::deg2rad(2.5f));
+        // Chuyển sai số vị trí từ World Frame sang Body Frame theo góc Yaw hiện tại
+        float current_yaw = drone.state().yaw.load();
+        float cy = std::cos(current_yaw);
+        float sy = std::sin(current_yaw);
+        float err_xb =  cy * err_x + sy * err_y;
+        float err_yb = -sy * err_x + cy * err_y;
+
+        // Khi ở sát mặt đất (< 0.35m), giữ thăng bằng phẳng tuyệt đối (Roll=0, Pitch=0)
+        if (drone.state().altitude.load() < 0.35) {
+            corr_pitch = 0.0f;
+            corr_roll  = 0.0f;
+            return;
+        }
+
+        // Vùng chết (deadband) 2cm chống rung lắc vi mô
+        if (std::abs(err_xb) < 0.02f) err_xb = 0.0f;
+        if (std::abs(err_yb) < 0.02f) err_yb = 0.0f;
+
+        // PD Position Control êm dịu, không giật (giới hạn max 0.8 độ)
+        float p_gain = 0.15f;
+        float d_gain = 0.20f;
+        corr_pitch = DroneMath::clamp(p_gain * err_xb - d_gain * vx, -DroneMath::deg2rad(0.8f), DroneMath::deg2rad(0.8f));
+        corr_roll  = DroneMath::clamp(-p_gain * err_yb + d_gain * vy, -DroneMath::deg2rad(0.8f), DroneMath::deg2rad(0.8f));
     };
 
     // --- BƯỚC 1: CẤT CÁNH LÊN 2.0M VÀ LƠ LỬNG TRONG 10 GIÂY ---
@@ -124,18 +142,18 @@ int main() {
 
     // --- BƯỚC 3: HẠ CÁNH THẲNG ĐỨNG VỀ MẶT ĐẤT ---
     std::cout << "\n\n[🛬] BƯỚC 3: HẠ CÁNH THẲNG ĐỨNG VỀ MẶT ĐẤT..." << std::endl;
-    while (current_target_alt > 0.08) {
-        current_target_alt -= 0.03;
+    while (drone.state().altitude.load() > 0.10) {
+        if (current_target_alt > 0.0) {
+            current_target_alt = std::max(0.0, current_target_alt - 0.015);
+        }
         double current_alt = drone.state().altitude.load();
         double vz = drone.state().vz.load();
         double dt = 0.03;
 
         float thrust = alt_controller.compute_thrust(current_target_alt, current_alt, vz, dt);
 
-        float corr_roll = 0.0f, corr_pitch = 0.0f;
-        compute_position_lock_tilt(corr_roll, corr_pitch);
-
-        drone.send_attitude_target(corr_roll, corr_pitch, initial_yaw, thrust);
+        // Giữ phẳng hoàn toàn khi hạ cánh (Roll=0, Pitch=0) để 4 chân tiếp đất cùng lúc, không bị ngã
+        drone.send_attitude_target(0.0f, 0.0f, initial_yaw, thrust);
 
         std::cout << "Hạ cánh: " << std::fixed << std::setprecision(2) << current_target_alt
                   << "m | Thực tế: " << current_alt << "m | Thrust: " << thrust

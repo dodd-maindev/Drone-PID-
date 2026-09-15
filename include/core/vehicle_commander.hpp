@@ -4,6 +4,7 @@
 #include <chrono>
 #include <array>
 #include "comm/gz_bridge.hpp"
+#include "comm/mavlink_bridge.hpp"
 #include "controllers/motor_mixer.hpp"
 #include "core/vehicle_state.hpp"
 #include "utils/data_logger.hpp"
@@ -11,7 +12,7 @@
 namespace DroneCore {
 
 /**
- * @brief Class điều phối phương tiện cấp cao (Vehicle Commander cho Gazebo Sim)
+ * @brief Class điều phối phương tiện cấp cao (Vehicle Commander cho Gazebo Sim & QGC)
  */
 class VehicleCommander {
 public:
@@ -33,6 +34,9 @@ public:
     // Truy cập dữ liệu trạng thái máy bay
     const VehicleState& state() const { return state_; }
 
+    // Quản lý MAVLink Bridge (QGroundControl)
+    DroneComm::MavlinkBridge& mavlink() { return mavlink_bridge_; }
+
     // Quản lý logger dữ liệu
     DroneUtils::DataLogger& logger() { return logger_; }
 
@@ -40,6 +44,7 @@ private:
     void control_worker();
 
     DroneComm::GzBridge gz_bridge_;
+    DroneComm::MavlinkBridge mavlink_bridge_;
     DroneControllers::MotorMixer mixer_;
     VehicleState state_;
     DroneUtils::DataLogger logger_;

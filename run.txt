@@ -1,0 +1,87 @@
+# ============================================================
+# HƯỚNG DẪN CHẠY MÔ PHỎNG & ĐIỀU KHIỂN DRONE C++ (KHÔNG CẦN PX4)
+# ============================================================
+
+# BƯỚC 1: Khởi động mô phỏng Gazebo (Terminal 1)
+export GZ_SIM_RESOURCE_PATH=/home/do/drone_control_cpp/simulation/models
+gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
+
+# (Lưu ý WSL2: Nếu muốn chạy mượt bằng GPU rời Nvidia):
+ export GZ_SIM_RESOURCE_PATH=/home/do/drone_control_cpp/simulation/models
+ MESA_D3D12_DEFAULT_ADAPTER_NAME=GeForce GALLIUM_DRIVER=d3d12 gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
+
+# ------------------------------------------------------------
+
+# Thí nghiệm 2: Giữ độ cao PID (Cất cánh 2.0m -> 3.5m -> Hạ cánh)
+~/drone_control_cpp/build/02_pid_altitude_hold
+
+# Thí nghiệm 4: Lái Drone thời gian thực bằng bàn phím (Virtual RC Teleop)
+~/drone_control_cpp/build/04_keyboard_teleop
+
+# BẢNG TỔNG HỢP TOÀN BỘ PHÍM BẤM & CHỨC NĂNG BÀI 4:
+# ==============================================================================
+# [A]            : HẠ CÁNH AN TOÀN (Safe Landing)
+#                  - Tự động hạ độ cao thẳng đứng êm ái (~0.6 m/s).
+#                  - Tiếp đất phẳng tuyệt đối (Roll=0, Pitch=0), 4 chân chạm đất cùng lúc.
+#                  - Tự động Disarm tắt 4 động cơ an toàn và chuyển sang trạng thái chờ.
+#
+# [Q]            : KHỞI ĐỘNG & BAY LÊN TIẾP (Takeoff / Climb)
+#                  - Khi đang ở mặt đất (sau khi ấn A): Tự động Arm động cơ, cất cánh
+#                    thẳng đứng dạng dốc (leo mượt như thang máy) lên chuẩn 2.0m.
+#                  - Khi đã lên 2.0m, tự động kích hoạt mỏ neo giữ vị trí và chế độ lái.
+#                  - Nếu đang bay: Tự động nâng drone lên tối thiểu 2.0m.
+#
+# [Phím Mũi Tên] : ĐIỀU KHIỂN HƯỚNG BAY CÓ GIỚI HẠN TỐC ĐỘ (Cruise Speed Controller)
+#                  - Mũi tên LÊN   : Tiến về phía trước (Giữ đều đúng tốc độ max).
+#                  - Mũi tên XUỐNG : Lùi về phía sau (Giữ đều đúng tốc độ max).
+#                  - Mũi tên TRÁI  : Bay dạt sang Trái (Giữ đều đúng tốc độ max).
+#                  - Mũi tên PHẢI  : Bay dạt sang Phải (Giữ đều đúng tốc độ max).
+#                  * CƠ CHẾ ĐỊNH MỨC VẬN TỐC TỰ ĐỘNG (Speed Limiter):
+#                    Khi giữ phím càng lâu, drone KHÔNG BỊ TĂNG TỐC VÔ HẠN. Drone tự động
+#                    nghiêng tới để tăng tốc, khi chạm trần vận tốc thì tự hạ phẳng góc nghiêng,
+#                    và nếu vượt quá thì tự động ngửa ngược lại để phanh hãm giữ đều tốc độ!
+#                  * CƠ CHẾ MỎ NEO TỰ ĐỘNG (Virtual Anchor):
+#                    Khi nhả tay khỏi phím mũi tên (sau 180ms), drone tự động kích hoạt
+#                    phanh triệt tiêu toàn bộ quán tính trôi và khóa cứng tọa độ ngang (X, Y).
+#
+# [W / S]        : TĂNG / GIẢM ĐỘ CAO (Altitude Control)
+#                  - Phím W        : Bay lên cao hơn (mỗi lần ấn tăng +0.15m, tối đa 10m).
+#                  - Phím S        : Hạ thấp xuống (mỗi lần ấn giảm -0.15m, tối thiểu an toàn 0.3m).
+#
+# [Z / C / E / D]: XOAY ĐẦU DRONE (Yaw Rotation)
+#                  - Phím Z        : Xoay đầu sang Trái (CCW) mỗi lần ấn +5.0°.
+#                  - Phím C / E / D: Xoay đầu sang Phải (CW) mỗi lần ấn -5.0°.
+#
+# [1 / 2 / 3]    : CHUYỂN ĐỔI CHẾ ĐỘ TỐC ĐỘ GIỚI HẠN (Speed Limit Modes)
+#                  - Phím 1        : Chế độ CHẬM (Giới hạn 1.0 m/s ~ 3.6 km/h | Max 4.5°).
+#                  - Phím 2        : Chế độ VỪA  (Giới hạn 2.5 m/s ~ 9.0 km/h | Max 8.0°).
+#                  - Phím 3        : Chế độ NHANH (Giới hạn 5.0 m/s ~ 18.0 km/h | Max 14.0°).
+#
+# [SPACE] (Cách) : PHANH ĐỨNG KHẨN CẤP (Emergency Brake)
+#                  - Triệt tiêu góc lái về 0°, phanh đứng yên và ghim mỏ neo ngay lập tức.
+#
+# [X]            : THOÁT CHƯƠNG TRÌNH (Safe Exit)
+#                  - Tự động hạ cánh an toàn chạm đất rồi mới thoát chương trình.
+# ==============================================================================
+
+# Thí nghiệm 5: Drone tự xoay tròn quanh trục đứng Yaw (Trái / Phải / Nhiều vòng)
+~/drone_control_cpp/build/05_yaw_rotation_control
+# Các lệnh nhanh với tham số:
+# ~/drone_control_cpp/build/05_yaw_rotation_control left 360   (Quay tròn 360° sang Trái)
+# ~/drone_control_cpp/build/05_yaw_rotation_control right 360  (Quay tròn 360° sang Phải)
+# ~/drone_control_cpp/build/05_yaw_rotation_control left 720   (Quay tròn 2 vòng 720°)
+# ~/drone_control_cpp/build/05_yaw_rotation_control left 180   (Quay đảo đầu 180°)
+
+# ============================================================
+# KẾT NỐI QGROUNDCONTROL (QGC):
+# ============================================================
+# Hệ thống đã tích hợp sẵn module MavlinkBridge phát dữ liệu sang QGC (UDP 14550)
+# và nhận lệnh từ QGC (UDP 14540).
+# 1. Bật Gazebo Sim (Terminal 1)
+# 2. Mở QGroundControl (trên Windows hoặc WSL2 Ubuntu)
+# 3. Chạy bất kỳ bài điều khiển nào (02, 04, 05) ở Terminal 2
+# -> QGC sẽ tự động kết nối, hiển thị mô hình Drone 3D, la bàn Heading,
+#    độ cao, vận tốc và thông báo trạng thái "Antigravity C++ Autopilot Online"!
+
+
+

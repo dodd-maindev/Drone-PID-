@@ -8,20 +8,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(gz-transport13 REQUIRED)
 find_package(gz-msgs10 REQUIRED)
 
-# Thư viện Core Controller (Giao tiếp trực tiếp với Gazebo Sim)
+# Thư viện Core Controller (Giao tiếp trực tiếp với Gazebo Sim & QGroundControl)
 add_library(drone_lib STATIC
     src/comm/gz_bridge.cpp
+    src/comm/mavlink_bridge.cpp
     src/controllers/altitude_controller.cpp
     src/core/vehicle_commander.cpp
     src/utils/data_logger.cpp
 )
 
-target_include_directories(drone_lib PUBLIC include)
+target_include_directories(drone_lib PUBLIC 
+    include 
+    third_party/mavlink
+)
 target_link_libraries(drone_lib PUBLIC
     gz-transport13::gz-transport13
     gz-msgs10::gz-msgs10
     pthread
 )
+target_compile_options(drone_lib PUBLIC -Wno-address-of-packed-member)
 
 # Bài 2: PID Altitude Hold (Trọng tâm dự án)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experiments/02_pid_altitude_hold.cpp")

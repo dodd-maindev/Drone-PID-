@@ -16,6 +16,16 @@ bool VehicleCommander::start(int /*dummy_port*/) {
         return false;
     }
 
+    // Khởi động MAVLink Bridge kết nối QGroundControl
+    mavlink_bridge_.init(&state_);
+    mavlink_bridge_.set_arm_callback([this](bool arm_val) {
+        if (arm_val) {
+            this->arm();
+        } else {
+            this->disarm();
+        }
+    });
+
     start_time_ = std::chrono::steady_clock::now();
     log_counter_ = 0;
     logger_.start("/home/do/drone_control_cpp/log", "flight_telemetry");
@@ -32,6 +42,7 @@ void VehicleCommander::stop() {
         if (control_thread_.joinable()) {
             control_thread_.join();
         }
+        mavlink_bridge_.shutdown();
         gz_bridge_.shutdown();
         logger_.stop();
     }
@@ -46,6 +57,7 @@ bool VehicleCommander::wait_for_connection(int timeout_seconds) {
             std::cout << "[VehicleCommander] [✓] Đã kết nối thành công với Drone x500 trong Gazebo Sim!" << std::endl;
             // Khởi tạo mục tiêu yaw ban đầu trùng với hướng máy bay lúc xuất phát
             target_yaw_.store(state_.yaw.load());
+            mavlink_bridge_.send_statustext("Gazebo Sim Connected", 6);
             return true;
         }
 
@@ -66,6 +78,7 @@ bool VehicleCommander::wait_for_connection(int timeout_seconds) {
 void VehicleCommander::arm(bool /*force*/) {
     std::cout << "[VehicleCommander] Gửi lệnh ARM động cơ (Gazebo)..." << std::endl;
     state_.is_armed.store(true);
+    mavlink_bridge_.send_statustext("Vehicle ARMED", 6);
 }
 
 void VehicleCommander::disarm() {
@@ -78,6 +91,7 @@ void VehicleCommander::disarm() {
     state_.motor_speed_2.store(0.0f);
     state_.motor_speed_3.store(0.0f);
     state_.current_thrust.store(0.0f);
+    mavlink_bridge_.send_statustext("Vehicle DISARMED", 6);
 }
 
 void VehicleCommander::set_offboard_mode() {
