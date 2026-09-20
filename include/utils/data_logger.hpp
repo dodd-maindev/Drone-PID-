@@ -18,6 +18,10 @@ struct FlightLogEntry {
     float target_pitch_deg{0.0f};
     float target_yaw_deg{0.0f};
 
+    float actual_x{0.0f};
+    float actual_y{0.0f};
+    float actual_vx{0.0f};
+    float actual_vy{0.0f};
     float actual_alt{0.0f};
     float actual_vz{0.0f};
     float actual_roll_deg{0.0f};

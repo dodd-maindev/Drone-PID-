@@ -17,7 +17,7 @@ float AltitudeController::compute_thrust(double target_alt, double current_alt, 
 
     // 2. Phanh vi phân vận tốc thẳng đứng (Velocity Damping) trực tiếp từ vz:
     // Tránh hoàn toàn hiện tượng Derivative Kick khi đổi setpoint và triệt tiêu rung giật
-    const double kv = 0.25;
+    const double kv = 0.32;
     double total_thrust = hover_thrust_ + delta_thrust - kv * vz;
 
     // 3. Giới hạn dải ga [0.10, 0.85] (giữ lại ít nhất 15% dự phòng cho cân bằng tư thế)

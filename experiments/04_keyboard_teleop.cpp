@@ -8,6 +8,7 @@
 #include <cmath>
 #include "core/vehicle_commander.hpp"
 #include "controllers/altitude_controller.hpp"
+#include "controllers/position_controller.hpp"
 #include "math/math_utils.hpp"
 
 // Cấu hình bàn phím Non-blocking (nhận phím thời gian thực không cần nhấn Enter)
@@ -24,26 +25,37 @@ void set_nonblocking_terminal(bool enable) {
     }
 }
 
-// Đọc phím bấm phi công
+// Đọc phím bấm thời gian thực: quét sạch toàn bộ hàng đợi STDIN và trả về phím mới nhất
 char read_key() {
+    char latest_key = 0;
     char c = 0;
-    if (read(STDIN_FILENO, &c, 1) > 0) {
-        if (c == 27) { // Ký tự escape của phím mũi tên ESC [ A/B/C/D
-            char seq[2];
-            if (read(STDIN_FILENO, &seq[0], 1) > 0 && read(STDIN_FILENO, &seq[1], 1) > 0) {
-                if (seq[0] == '[') {
-                    switch (seq[1]) {
-                        case 'A': return 'U'; // Mũi tên LÊN (Tiến)
-                        case 'B': return 'N'; // Mũi tên XUỐNG (Lùi)
-                        case 'C': return 'R'; // Mũi tên PHẢI (Nghiêng Phải)
-                        case 'D': return 'L'; // Mũi tên TRÁI (Nghiêng Trái)
-                    }
+
+    // Đọc cạn toàn bộ các ký tự đang tồn đọng trong buffer bàn phím
+    while (read(STDIN_FILENO, &c, 1) > 0) {
+        if (c == 27) { // Ký tự escape ESC của phím mũi tên ESC [ A/B/C/D
+            char seq[2] = {0, 0};
+            int tries = 0;
+            while (tries++ < 20 && read(STDIN_FILENO, &seq[0], 1) <= 0) {
+                usleep(100);
+            }
+            tries = 0;
+            while (tries++ < 20 && read(STDIN_FILENO, &seq[1], 1) <= 0) {
+                usleep(100);
+            }
+            if (seq[0] == '[') {
+                switch (seq[1]) {
+                    case 'A': latest_key = 'U'; break; // Mũi tên LÊN (Tiến)
+                    case 'B': latest_key = 'N'; break; // Mũi tên XUỐNG (Lùi)
+                    case 'C': latest_key = 'R'; break; // Mũi tên PHẢI (Phải)
+                    case 'D': latest_key = 'L'; break; // Mũi tên TRÁI (Trái)
+                    default: break;
                 }
             }
+        } else {
+            latest_key = c;
         }
-        return c;
     }
-    return 0;
+    return latest_key;
 }
 
 enum class FlightState {
@@ -56,20 +68,21 @@ enum class FlightState {
 int main() {
     std::cout << "============================================================" << std::endl;
     std::cout << " BÀN PHÍM ĐIỀU KHIỂN TAY CẦM RC ẢO (VIRTUAL RC TELEOP - PRO)" << std::endl;
-    std::cout << " (Hạ cánh [A] - Khởi động bay lên tiếp [Q] - Mỏ neo tự động)" << std::endl;
+    std::cout << " (Chống trôi gió tự nhiên - Khóa mỏ neo - Phanh tức thì)" << std::endl;
     std::cout << "============================================================" << std::endl;
-    std::cout << " [A]            : HẠ CÁNH AN TOÀN (Tự đáp đất & ngắt động cơ)" << std::endl;
+    std::cout << " [A]            : HẠ CÁNH AN TOÀN (Giữ vị trí đáp thẳng đứng)" << std::endl;
     std::cout << " [Q]            : KHỞI ĐỘNG DRONE BAY LÊN TIẾP (Cất cánh lên 2.0m)" << std::endl;
-    std::cout << " [Phím Mũi tên] : Lái Tiến / Lùi / Trái / Phải (Nhả ra tự khóa mỏ neo)" << std::endl;
-    std::cout << " [W / S]        : Tăng / Giảm độ cao (mỗi nấc 0.15m)" << std::endl;
-    std::cout << " [Z / C / E / D]: Xoay đầu (Yaw) Trái / Phải" << std::endl;
-    std::cout << " [1 / 2 / 3]    : Đổi chế độ tốc độ: 1-Chậm (4.5°), 2-Vừa (8°), 3-Nhanh (14°)" << std::endl;
-    std::cout << " [SPACE]        : Phanh đứng khẩn cấp (Emergency Hover)" << std::endl;
+    std::cout << " [Phím Mũi tên] : Lái Tiến / Lùi / Trái / Phải (Nhả ra tự phanh khóa neo)" << std::endl;
+    std::cout << " [W / S]        : Tăng / Giảm độ cao (Bấm giữ để leo/hạ, nhả ra đứng yên)" << std::endl;
+    std::cout << " [Z / C / E / D]: Xoay đầu (Yaw) Trái / Phải (Tự xoay véc-tơ bù gió)" << std::endl;
+    std::cout << " [1 / 2 / 3]    : Đổi chế độ tốc độ: 1-Chậm (1m/s), 2-Vừa (2.5m/s), 3-Nhanh (5m/s)" << std::endl;
+    std::cout << " [SPACE]        : Phanh đứng khẩn cấp (Emergency Hover Lock)" << std::endl;
     std::cout << " [X]            : Thoát chương trình" << std::endl;
     std::cout << "============================================================" << std::endl;
 
     DroneCore::VehicleCommander drone;
     DroneControllers::AltitudeController alt_controller(0.59, 0.35, 0.08, 0.22);
+    DroneControllers::PositionController pos_controller;
 
     if (!drone.start()) {
         std::cerr << "[!] Không thể kết nối GZ-Transport!" << std::endl;
@@ -92,16 +105,32 @@ int main() {
     drone.set_offboard_mode();
 
     // 2. Tự động cất cánh ban đầu lên độ cao 2.0m ổn định
-    std::cout << "[🚀] Tự động cất cánh ban đầu lên 2.0m..." << std::endl;
+    std::cout << "[🚀] Tự động cất cánh ban đầu lên 2.0m (Tự khóa vị trí chống gió)..." << std::endl;
     double target_alt = 0.0;
     float current_target_yaw_rad = drone.state().yaw.load();
+    pos_controller.set_anchor(drone.state().pos_x.load(), drone.state().pos_y.load());
+
     auto takeoff_start = std::chrono::steady_clock::now();
     while (std::chrono::duration<double>(std::chrono::steady_clock::now() - takeoff_start).count() < 5.0) {
         target_alt = std::min(2.0, target_alt + 0.025);
         double current_alt = drone.state().altitude.load();
         double vz = drone.state().vz.load();
         float thrust = alt_controller.compute_thrust(target_alt, current_alt, vz, 0.033);
-        drone.send_attitude_target(0.0f, 0.0f, current_target_yaw_rad, thrust);
+
+        float r_target = 0.0f;
+        float p_target = 0.0f;
+        if (current_alt > 0.08) {
+            auto pos_out = pos_controller.update(
+                drone.state().pos_x.load(), drone.state().pos_y.load(),
+                drone.state().vx.load(), drone.state().vy.load(),
+                drone.state().yaw.load(),
+                0.0f, 0.0f, false, false, 10.0f, 0.033f
+            );
+            r_target = pos_out.roll_deg;
+            p_target = pos_out.pitch_deg;
+        }
+
+        drone.send_attitude_target(DroneMath::deg2rad(r_target), DroneMath::deg2rad(p_target), current_target_yaw_rad, thrust);
         std::this_thread::sleep_for(std::chrono::milliseconds(33));
     }
 
@@ -114,23 +143,16 @@ int main() {
     float target_roll_deg = 0.0f;
     float target_pitch_deg = 0.0f;
     float max_speed_mps = 2.5f;
-    float max_tilt_deg = 8.0f;
-    std::string speed_mode_name = "VỪA (2.5m/s | 8.0°)";
+    float max_tilt_deg = 12.0f;
+    std::string speed_mode_name = "VỪA (2.5m/s | 12.0°)";
 
     float target_vx_cmd = 0.0f;
     float target_vy_cmd = 0.0f;
     auto last_pitch_key_time = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     auto last_roll_key_time  = std::chrono::steady_clock::now() - std::chrono::seconds(1);
-
-    float anchor_x = drone.state().pos_x.load();
-    float anchor_y = drone.state().pos_y.load();
-    bool anchor_locked = true;
-
-    float land_x = 0.0f;
-    float land_y = 0.0f;
-
-    float takeoff_x = 0.0f;
-    float takeoff_y = 0.0f;
+    auto last_alt_key_time   = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    float alt_vel_cmd = 0.0f;
+    bool alt_was_active = false;
 
     bool running = true;
 
@@ -144,8 +166,7 @@ int main() {
                 case 'a': case 'A':
                     if (state == FlightState::FLYING || state == FlightState::TAKEOFF) {
                         std::cout << "\n\n[🛬] ĐÃ NHẬN PHÍM 'A': KÍCH HOẠT HẠ CÁNH AN TOÀN..." << std::endl;
-                        land_x = drone.state().pos_x.load();
-                        land_y = drone.state().pos_y.load();
+                        pos_controller.set_anchor(drone.state().pos_x.load(), drone.state().pos_y.load());
                         target_alt = drone.state().altitude.load();
                         state = FlightState::LANDING;
                     }
@@ -158,8 +179,7 @@ int main() {
                         drone.arm(true);
                         drone.set_offboard_mode();
                         alt_controller.reset();
-                        takeoff_x = drone.state().pos_x.load();
-                        takeoff_y = drone.state().pos_y.load();
+                        pos_controller.set_anchor(drone.state().pos_x.load(), drone.state().pos_y.load());
                         target_alt = 0.15;
                         current_target_yaw_rad = drone.state().yaw.load();
                         state = FlightState::TAKEOFF;
@@ -169,40 +189,42 @@ int main() {
                     }
                     break;
 
-                // Điều khiển độ cao (khi đang bay)
+                // Điều khiển độ cao (khi đang bay: bấm giữ để tăng/giảm, nhả ra dừng ngay lập tức)
                 case 'w': case 'W':
                     if (state == FlightState::FLYING) {
-                        target_alt = std::min(10.0, target_alt + 0.15);
+                        alt_vel_cmd = 0.85f; // leo lên tốc độ 0.85 m/s
+                        last_alt_key_time = now;
                     }
                     break;
                 case 's': case 'S':
                     if (state == FlightState::FLYING) {
-                        target_alt = std::max(0.3, target_alt - 0.15);
+                        alt_vel_cmd = -0.70f; // hạ xuống tốc độ 0.70 m/s
+                        last_alt_key_time = now;
                     }
                     break;
 
-                // Điều khiển Tiến / Lùi (Pitch) với giới hạn vận tốc cố định
-                case 'U': // Mũi tên LÊN: Tiến
+                // Điều khiển Tiến / Lùi (Pitch): Mũi tên Lên / Xuống hoặc phím I / K
+                case 'U': case 'i': case 'I':
                     if (state == FlightState::FLYING) {
                         target_vx_cmd = max_speed_mps;
                         last_pitch_key_time = now;
                     }
                     break;
-                case 'N': // Mũi tên XUỐNG: Lùi
+                case 'N': case 'k': case 'K':
                     if (state == FlightState::FLYING) {
                         target_vx_cmd = -max_speed_mps;
                         last_pitch_key_time = now;
                     }
                     break;
 
-                // Điều khiển Trái / Phải (Roll) với giới hạn vận tốc cố định
-                case 'L': // Mũi tên TRÁI: Nghiêng sang trái
+                // Điều khiển Trái / Phải (Roll): Mũi tên Trái / Phải hoặc phím J / L
+                case 'L': case 'j': case 'J':
                     if (state == FlightState::FLYING) {
                         target_vy_cmd = max_speed_mps;
                         last_roll_key_time = now;
                     }
                     break;
-                case 'R': // Mũi tên PHẢI: Nghiêng sang phải
+                case 'R': case 'l':
                     if (state == FlightState::FLYING) {
                         target_vy_cmd = -max_speed_mps;
                         last_roll_key_time = now;
@@ -220,18 +242,18 @@ int main() {
                 // Đổi chế độ tốc độ giới hạn
                 case '1':
                     max_speed_mps = 1.0f;
-                    max_tilt_deg = 4.5f;
-                    speed_mode_name = "CHẬM (1.0m/s | 4.5°)";
+                    max_tilt_deg = 8.0f;
+                    speed_mode_name = "CHẬM (1.0m/s | 8.0°)";
                     break;
                 case '2':
                     max_speed_mps = 2.5f;
-                    max_tilt_deg = 8.0f;
-                    speed_mode_name = "VỪA (2.5m/s | 8.0°)";
+                    max_tilt_deg = 12.0f;
+                    speed_mode_name = "VỪA (2.5m/s | 12.0°)";
                     break;
                 case '3':
                     max_speed_mps = 5.0f;
-                    max_tilt_deg = 14.0f;
-                    speed_mode_name = "NHANH (5.0m/s | 14.0°)";
+                    max_tilt_deg = 18.0f;
+                    speed_mode_name = "NHANH (5.0m/s | 18.0°)";
                     break;
 
                 // Phím cách: Phanh đứng khẩn cấp
@@ -243,6 +265,11 @@ int main() {
                         target_vy_cmd = 0.0f;
                         target_alt = drone.state().altitude.load();
                         current_target_yaw_rad = drone.state().yaw.load();
+                        pos_controller.set_anchor(drone.state().pos_x.load(), drone.state().pos_y.load());
+                        last_pitch_key_time = now - std::chrono::seconds(1);
+                        last_roll_key_time = now - std::chrono::seconds(1);
+                        last_alt_key_time = now - std::chrono::seconds(1);
+                        alt_controller.reset();
                     }
                     break;
 
@@ -257,97 +284,90 @@ int main() {
         double vz = drone.state().vz.load();
 
         if (state == FlightState::FLYING) {
+            // 1. Quản lý độ cao: khi buông phím W/S, chốt độ cao hiện tại êm dịu (không xóa tích phân ga)
+            bool alt_active = (std::chrono::duration<double>(now - last_alt_key_time).count() <= 0.45);
+            if (alt_active) {
+                target_alt += alt_vel_cmd * 0.033;
+                target_alt = DroneMath::clamp(target_alt, 0.3, 10.0);
+            } else {
+                if (alt_was_active) {
+                    target_alt = current_alt;
+                    // Giữ nguyên tích phân của alt_controller để không làm sụt ga đột ngột!
+                }
+            }
+            alt_was_active = alt_active;
+
+            // 2. Quản lý di chuyển ngang & chống gió tự nhiên
             double time_since_pitch = std::chrono::duration<double>(now - last_pitch_key_time).count();
             double time_since_roll  = std::chrono::duration<double>(now - last_roll_key_time).count();
 
-            bool pitch_active = (time_since_pitch <= 0.18);
-            bool roll_active  = (time_since_roll  <= 0.18);
-            bool is_hover_mode = (!pitch_active && !roll_active);
+            // Ngưỡng 0.45s giúp nối mượt mà khoảng trễ nhịp gõ phím đầu tiên của bàn phím OS/terminal
+            bool pitch_active = (time_since_pitch <= 0.45);
+            bool roll_active  = (time_since_roll  <= 0.45);
 
-            float vx_cur = drone.state().vx.load();
-            float vy_cur = drone.state().vy.load();
+            float current_yaw = drone.state().yaw.load();
+            float vx_world = drone.state().vx.load();
+            float vy_world = drone.state().vy.load();
 
-            if (is_hover_mode) {
-                // [CHẾ ĐỘ MỎ NEO TỰ ĐỘNG - VIRTUAL ANCHOR]:
-                // Khi người dùng nhả tay khỏi phím điều khiển (sau 180ms):
-                // 1. Phanh triệt tiêu toàn bộ vận tốc trôi.
-                // 2. Ghim cứng tọa độ (anchor_x, anchor_y).
-                if (!anchor_locked) {
-                    if (std::abs(vx_cur) < 0.08f && std::abs(vy_cur) < 0.08f) {
-                        anchor_x = drone.state().pos_x.load();
-                        anchor_y = drone.state().pos_y.load();
-                        anchor_locked = true;
-                        target_pitch_deg = 0.0f;
-                        target_roll_deg  = 0.0f;
-                    } else {
-                        const float kv_brake = 2.5f;
-                        target_pitch_deg = DroneMath::clamp(-kv_brake * vx_cur, -4.0f, 4.0f);
-                        target_roll_deg  = DroneMath::clamp( kv_brake * vy_cur, -4.0f, 4.0f);
-                    }
-                }
+            auto pos_out = pos_controller.update(
+                drone.state().pos_x.load(), drone.state().pos_y.load(),
+                vx_world, vy_world,
+                current_yaw,
+                pitch_active ? target_vx_cmd : 0.0f,
+                roll_active  ? target_vy_cmd : 0.0f,
+                pitch_active, roll_active,
+                max_tilt_deg,
+                0.033f
+            );
 
-                if (anchor_locked) {
-                    float err_x = anchor_x - drone.state().pos_x.load();
-                    float err_y = anchor_y - drone.state().pos_y.load();
+            target_pitch_deg = pos_out.pitch_deg;
+            target_roll_deg  = pos_out.roll_deg;
 
-                    // Chuyển sai số vị trí từ World Frame sang Body Frame theo góc Yaw hiện tại
-                    float current_yaw = drone.state().yaw.load();
-                    float cy = std::cos(current_yaw);
-                    float sy = std::sin(current_yaw);
-                    float err_xb =  cy * err_x + sy * err_y;
-                    float err_yb = -sy * err_x + cy * err_y;
-
-                    if (std::abs(err_xb) < 0.02f) err_xb = 0.0f;
-                    if (std::abs(err_yb) < 0.02f) err_yb = 0.0f;
-
-                    target_pitch_deg = DroneMath::clamp(1.0f * err_xb - 1.2f * vx_cur, -2.5f, 2.5f);
-                    target_roll_deg  = DroneMath::clamp(-1.0f * err_yb + 1.2f * vy_cur, -2.5f, 2.5f);
-                }
-            } else {
-                // [CHẾ ĐỘ LÁI ĐỊNH MỨC TỐC ĐỘ - CRUISE SPEED CONTROLLER]:
-                // Duy trì tốc độ cố định chính xác max_speed_mps khi giữ phím:
-                // - Chưa đủ tốc: nghiêng tới để tăng tốc
-                // - Đạt đủ tốc: giảm nghiêng về 0 để giữ tốc độ đều
-                // - Vượt quá tốc: ngửa ngược lại để phanh hãm về đúng tốc độ giới hạn
-                anchor_locked = false;
-
-                float cmd_vx = pitch_active ? target_vx_cmd : 0.0f;
-                float cmd_vy = roll_active  ? target_vy_cmd : 0.0f;
-
-                float evx = cmd_vx - vx_cur;
-                float evy = cmd_vy - vy_cur;
-
-                const float kv_drive = 2.5f;
-                target_pitch_deg = DroneMath::clamp(kv_drive * evx, -max_tilt_deg, max_tilt_deg);
-                target_roll_deg  = DroneMath::clamp(-kv_drive * evy, -max_tilt_deg, max_tilt_deg);
-            }
-
-            float cos_tilt = std::cos(DroneMath::deg2rad(target_roll_deg)) * std::cos(DroneMath::deg2rad(target_pitch_deg));
-            if (cos_tilt < 0.7f) cos_tilt = 0.7f;
-
-            float base_thrust = alt_controller.compute_thrust(target_alt, current_alt, vz, 0.033);
-            float total_thrust = base_thrust / cos_tilt;
+            // Ga nâng từ AltitudeController (vehicle_commander.cpp đã tự động bù tilt compensation trên tầng attitude)
+            float total_thrust = alt_controller.compute_thrust(target_alt, current_alt, vz, 0.033);
 
             drone.send_attitude_target(DroneMath::deg2rad(target_roll_deg),
                                        DroneMath::deg2rad(target_pitch_deg),
                                        current_target_yaw_rad,
                                        total_thrust);
 
-            std::string mode_tag = is_hover_mode ? "⚓ HOVER (BÀI 2)" : ("🎮 LÁI " + speed_mode_name);
-            std::cout << "\r[" << std::setw(16) << std::left << mode_tag << "] "
+            std::string mode_tag;
+            if (pos_out.is_braking) {
+                mode_tag = "🛑 PHANH TỨC THÌ";
+            } else if (pos_out.is_hover) {
+                mode_tag = "⚓ HOVER (KHÓA NEO)";
+            } else {
+                mode_tag = "🎮 LÁI " + speed_mode_name;
+            }
+
+            std::cout << "\r[" << std::setw(18) << std::left << mode_tag << "] "
                       << "Alt: " << std::fixed << std::setprecision(2) << current_alt << "m (Đặt: " << target_alt << "m) | "
                       << "Roll: " << std::setw(5) << std::setprecision(1) << target_roll_deg << "° | "
                       << "Pitch: " << std::setw(5) << target_pitch_deg << "° | "
-                      << "Yaw: " << std::setw(5) << DroneMath::rad2deg(drone.state().yaw.load()) << "° | "
-                      << "Vx: " << std::setw(5) << drone.state().vx.load() << "m/s | "
-                      << "Vy: " << std::setw(5) << drone.state().vy.load() << "m/s   " << std::flush;
+                      << "Yaw: " << std::setw(5) << DroneMath::rad2deg(current_yaw) << "° | "
+                      << "Vx: " << std::setw(5) << vx_world << "m/s | "
+                      << "Vy: " << std::setw(5) << vy_world << "m/s | "
+                      << "BùGió(P/R): " << std::setw(4) << pos_out.wind_pitch_trim_deg << "°/" << pos_out.wind_roll_trim_deg << "°   " << std::flush;
 
         } else if (state == FlightState::LANDING) {
             target_alt = std::max(0.05, target_alt - 0.02); // Hạ cánh từ từ ~0.6 m/s
             float thrust = alt_controller.compute_thrust(target_alt, current_alt, vz, 0.033);
 
-            // Giữ thăng bằng phẳng tuyệt đối (Roll=0, Pitch=0) khi hạ cánh để tiếp đất thẳng đứng, không quệt chân sàn
-            drone.send_attitude_target(0.0f, 0.0f, current_target_yaw_rad, thrust);
+            float r_target = 0.0f;
+            float p_target = 0.0f;
+            // Khi còn trên cao (> 0.20m), duy trì khóa mỏ neo để gió không thổi trôi!
+            if (current_alt > 0.20) {
+                auto pos_out = pos_controller.update(
+                    drone.state().pos_x.load(), drone.state().pos_y.load(),
+                    drone.state().vx.load(), drone.state().vy.load(),
+                    drone.state().yaw.load(),
+                    0.0f, 0.0f, false, false, 8.0f, 0.033f
+                );
+                r_target = pos_out.roll_deg;
+                p_target = pos_out.pitch_deg;
+            }
+
+            drone.send_attitude_target(DroneMath::deg2rad(r_target), DroneMath::deg2rad(p_target), current_target_yaw_rad, thrust);
 
             std::cout << "\r[🛬 HẠ CÁNH AN TOÀN] Độ cao: " << std::fixed << std::setprecision(2) << current_alt 
                       << "m | Vận tốc rơi: " << vz << "m/s   " << std::flush;
@@ -372,16 +392,26 @@ int main() {
             target_alt = std::min(2.0, target_alt + 0.025); // Leo lên mượt mà dạng dốc
             float thrust = alt_controller.compute_thrust(target_alt, current_alt, vz, 0.033);
 
-            // Cất cánh thẳng đứng phẳng lì tuyệt đối, không nghiêng quệt chân sàn
-            drone.send_attitude_target(0.0f, 0.0f, current_target_yaw_rad, thrust);
+            float r_target = 0.0f;
+            float p_target = 0.0f;
+            if (current_alt > 0.25) {
+                auto pos_out = pos_controller.update(
+                    drone.state().pos_x.load(), drone.state().pos_y.load(),
+                    drone.state().vx.load(), drone.state().vy.load(),
+                    drone.state().yaw.load(),
+                    0.0f, 0.0f, false, false, 8.0f, 0.033f
+                );
+                r_target = pos_out.roll_deg;
+                p_target = pos_out.pitch_deg;
+            }
+
+            drone.send_attitude_target(DroneMath::deg2rad(r_target), DroneMath::deg2rad(p_target), current_target_yaw_rad, thrust);
 
             std::cout << "\r[🚀 ĐANG CẤT CÁNH LÊN 2.0M] Độ cao: " << std::fixed << std::setprecision(2) << current_alt 
                       << "m / 2.00m | Vz: " << vz << "m/s   " << std::flush;
 
             if (target_alt >= 2.0 && current_alt >= 1.90) {
-                anchor_x = drone.state().pos_x.load();
-                anchor_y = drone.state().pos_y.load();
-                anchor_locked = true;
+                pos_controller.set_anchor(drone.state().pos_x.load(), drone.state().pos_y.load());
                 target_roll_deg = 0.0f;
                 target_pitch_deg = 0.0f;
                 state = FlightState::FLYING;

@@ -10,6 +10,9 @@ gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
  export GZ_SIM_RESOURCE_PATH=/home/do/drone_control_cpp/simulation/models
  MESA_D3D12_DEFAULT_ADAPTER_NAME=GeForce GALLIUM_DRIVER=d3d12 gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
 
+export GZ_SIM_RESOURCE_PATH=/home/do/drone_control_cpp/simulation/models
+MESA_D3D12_DEFAULT_ADAPTER_NAME=GeForce GALLIUM_DRIVER=d3d12 gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
+
 # ------------------------------------------------------------
 
 # Thí nghiệm 2: Giữ độ cao PID (Cất cánh 2.0m -> 3.5m -> Hạ cánh)
@@ -82,6 +85,22 @@ gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
 # 3. Chạy bất kỳ bài điều khiển nào (02, 04, 05) ở Terminal 2
 # -> QGC sẽ tự động kết nối, hiển thị mô hình Drone 3D, la bàn Heading,
 #    độ cao, vận tốc và thông báo trạng thái "Antigravity C++ Autopilot Online"!
+
+# ============================================================
+# MÔ PHỎNG GIÓ VẬT LÝ THỰC TẾ (WIND SIMULATION):
+# ============================================================
+# Thế giới drone_world.sdf đã được kích hoạt plugin WindEffects & model x500_base đã bật enable_wind.
+# Bạn có thể phát gió động thời gian thực từ Terminal 3 để test độ kháng gió của Drone:
+#
+# - Thổi luồng gió mạnh 3.5 m/s từ hướng Tây sang Đông (+X):
+#   gz topic -t "/world/default/wind" -m gz.msgs.Wind -p "linear_velocity: {x: 3.5, y: 0.0, z: 0.0}"
+#
+# - Thổi luồng gió xiên giật mạnh (4 m/s hướng Bắc, 2 m/s hướng Đông):
+#   gz topic -t "/world/default/wind" -m gz.msgs.Wind -p "linear_velocity: {x: 4.0, y: 2.0, z: 0.0}"
+#
+# - Tắt gió (trả về trạng thái lặng gió):
+#   gz topic -t "/world/default/wind" -m gz.msgs.Wind -p "linear_velocity: {x: 0.0, y: 0.0, z: 0.0}"
+
 
 
 

@@ -193,6 +193,10 @@ void VehicleCommander::control_worker() {
             entry.target_pitch_deg = p_cmd * 180.0f / static_cast<float>(M_PI);
             entry.target_yaw_deg = y_cmd * 180.0f / static_cast<float>(M_PI);
 
+            entry.actual_x = state_.pos_x.load();
+            entry.actual_y = state_.pos_y.load();
+            entry.actual_vx = state_.vx.load();
+            entry.actual_vy = state_.vy.load();
             entry.actual_alt = state_.altitude.load();
             entry.actual_vz = state_.vz.load();
             entry.actual_roll_deg = r_cur * 180.0f / static_cast<float>(M_PI);
