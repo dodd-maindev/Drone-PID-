@@ -45,3 +45,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experiments/05_yaw_rotation_control.cpp")
     add_executable(05_yaw_rotation_control experiments/05_yaw_rotation_control.cpp)
     target_link_libraries(05_yaw_rotation_control PRIVATE drone_lib)
 endif()
+
+# Bài 6: Hardware-In-The-Loop (HITL) Gateway kết nối ESP32 với Gazebo Sim
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experiments/06_hitl_esp32_bridge.cpp")
+    add_executable(06_hitl_esp32_bridge experiments/06_hitl_esp32_bridge.cpp)
+    target_link_libraries(06_hitl_esp32_bridge PRIVATE drone_lib)
+endif()
+
