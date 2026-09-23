@@ -148,6 +148,8 @@ int main() {
 
     float target_vx_cmd = 0.0f;
     float target_vy_cmd = 0.0f;
+    int pitch_key_hits = 0;
+    int roll_key_hits = 0;
     auto last_pitch_key_time = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     auto last_roll_key_time  = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     auto last_alt_key_time   = std::chrono::steady_clock::now() - std::chrono::seconds(1);
@@ -208,12 +210,14 @@ int main() {
                     if (state == FlightState::FLYING) {
                         target_vx_cmd = max_speed_mps;
                         last_pitch_key_time = now;
+                        pitch_key_hits++;
                     }
                     break;
                 case 'N': case 'k': case 'K':
                     if (state == FlightState::FLYING) {
                         target_vx_cmd = -max_speed_mps;
                         last_pitch_key_time = now;
+                        pitch_key_hits++;
                     }
                     break;
 
@@ -222,12 +226,14 @@ int main() {
                     if (state == FlightState::FLYING) {
                         target_vy_cmd = max_speed_mps;
                         last_roll_key_time = now;
+                        roll_key_hits++;
                     }
                     break;
                 case 'R': case 'l':
                     if (state == FlightState::FLYING) {
                         target_vy_cmd = -max_speed_mps;
                         last_roll_key_time = now;
+                        roll_key_hits++;
                     }
                     break;
 
@@ -266,6 +272,8 @@ int main() {
                         target_alt = drone.state().altitude.load();
                         current_target_yaw_rad = drone.state().yaw.load();
                         pos_controller.set_anchor(drone.state().pos_x.load(), drone.state().pos_y.load());
+                        pitch_key_hits = 0;
+                        roll_key_hits = 0;
                         last_pitch_key_time = now - std::chrono::seconds(1);
                         last_roll_key_time = now - std::chrono::seconds(1);
                         last_alt_key_time = now - std::chrono::seconds(1);
@@ -301,17 +309,29 @@ int main() {
             double time_since_pitch = std::chrono::duration<double>(now - last_pitch_key_time).count();
             double time_since_roll  = std::chrono::duration<double>(now - last_roll_key_time).count();
 
-            // Ngưỡng 0.45s giúp nối mượt mà khoảng trễ nhịp gõ phím đầu tiên của bàn phím OS/terminal
-            bool pitch_active = (time_since_pitch <= 0.45);
-            bool roll_active  = (time_since_roll  <= 0.45);
+            // Độ trễ nhả phím thích ứng (Adaptive Key Release Timeout):
+            // - Khi đang giữ phím (repeat đang chạy, hits >= 2): chỉ cần 0.12s (120ms) không nhận thêm phím
+            //   là xác nhận người lái ĐÃ BUÔNG TAY, kích hoạt phanh lập tức (nhanh gấp 4 lần mức 0.45s cũ).
+            // - Khi mới gõ 1 phím (hits == 1): cho phép 0.25s để chờ phím lặp đầu tiên.
+            double pitch_timeout = (pitch_key_hits >= 2) ? 0.12 : 0.25;
+            bool pitch_active = (time_since_pitch <= pitch_timeout);
+            if (!pitch_active) {
+                pitch_key_hits = 0;
+            }
+
+            double roll_timeout = (roll_key_hits >= 2) ? 0.12 : 0.25;
+            bool roll_active  = (time_since_roll  <= roll_timeout);
+            if (!roll_active) {
+                roll_key_hits = 0;
+            }
 
             float current_yaw = drone.state().yaw.load();
-            float vx_world = drone.state().vx.load();
-            float vy_world = drone.state().vy.load();
+            float vx_body = drone.state().vx.load();
+            float vy_body = drone.state().vy.load();
 
             auto pos_out = pos_controller.update(
                 drone.state().pos_x.load(), drone.state().pos_y.load(),
-                vx_world, vy_world,
+                vx_body, vy_body,
                 current_yaw,
                 pitch_active ? target_vx_cmd : 0.0f,
                 roll_active  ? target_vy_cmd : 0.0f,
@@ -345,8 +365,8 @@ int main() {
                       << "Roll: " << std::setw(5) << std::setprecision(1) << target_roll_deg << "° | "
                       << "Pitch: " << std::setw(5) << target_pitch_deg << "° | "
                       << "Yaw: " << std::setw(5) << DroneMath::rad2deg(current_yaw) << "° | "
-                      << "Vx: " << std::setw(5) << vx_world << "m/s | "
-                      << "Vy: " << std::setw(5) << vy_world << "m/s | "
+                      << "Vx: " << std::setw(5) << vx_body << "m/s | "
+                      << "Vy: " << std::setw(5) << vy_body << "m/s | "
                       << "BùGió(P/R): " << std::setw(4) << pos_out.wind_pitch_trim_deg << "°/" << pos_out.wind_roll_trim_deg << "°   " << std::flush;
 
         } else if (state == FlightState::LANDING) {

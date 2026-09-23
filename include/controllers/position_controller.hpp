@@ -34,11 +34,17 @@ struct PositionControlOutput {
  */
 class PositionController {
 public:
+    enum class AxisMode {
+        DRIVING,
+        BRAKING,
+        HOLD
+    };
+
     PositionController() = default;
 
     void reset() {
-        i_wind_xb_ = 0.0f;
-        i_wind_yb_ = 0.0f;
+        i_wind_xw_ = 0.0f;
+        i_wind_yw_ = 0.0f;
         smoothed_cmd_vx_ = 0.0f;
         smoothed_cmd_vy_ = 0.0f;
         filtered_pitch_deg_ = 0.0f;
@@ -46,6 +52,8 @@ public:
         anchor_x_ = 0.0f;
         anchor_y_ = 0.0f;
         has_anchor_ = false;
+        mode_x_ = AxisMode::HOLD;
+        mode_y_ = AxisMode::HOLD;
         was_driving_x_ = false;
         was_driving_y_ = false;
     }
@@ -54,13 +62,15 @@ public:
         anchor_x_ = x;
         anchor_y_ = y;
         has_anchor_ = true;
+        mode_x_ = AxisMode::HOLD;
+        mode_y_ = AxisMode::HOLD;
         smoothed_cmd_vx_ = 0.0f;
         smoothed_cmd_vy_ = 0.0f;
     }
 
     PositionControlOutput update(
         float current_x, float current_y,
-        float vx_world, float vy_world,
+        float vx_body, float vy_body,
         float current_yaw_rad,
         float cmd_vx_body, float cmd_vy_body,
         bool is_driving_x, bool is_driving_y,
@@ -75,17 +85,16 @@ public:
         float cy = std::cos(current_yaw_rad);
         float sy = std::sin(current_yaw_rad);
 
-        // 1. Chuyển đổi vận tốc thực tế từ World Frame sang Body Frame
-        float vx_b =  cy * vx_world + sy * vy_world;
-        float vy_b = -sy * vx_world + cy * vy_world;
+        float vx_b = vx_body;
+        float vy_b = vy_body;
 
-        // 2. Gia tốc lệnh tay lái mượt mà (Slew Rate Limiter: max 3.5 m/s^2)
+        // 1. Gia tốc lệnh tay lái mượt mà (Slew Rate Limiter: max 3.5 m/s^2)
         const float max_accel = 3.5f;
         const float max_dv = max_accel * dt;
 
         if (is_driving_x) {
             if (!was_driving_x_) {
-                smoothed_cmd_vx_ = vx_b; // bắt đầu từ vận tốc hiện tại
+                smoothed_cmd_vx_ = vx_b;
             }
             if (cmd_vx_body > smoothed_cmd_vx_) {
                 smoothed_cmd_vx_ = std::min(cmd_vx_body, smoothed_cmd_vx_ + max_dv);
@@ -112,83 +121,117 @@ public:
         was_driving_x_ = is_driving_x;
         was_driving_y_ = is_driving_y;
 
-        // 3. KHÓA MỎ NEO TỨC THÌ LÚC BUÔNG PHÍM (Instant Anchor Snap - chuẩn DJI)
-        // Khi đang ấn lái: Mỏ neo trượt theo drone
-        // Khi vừa buông phím: Mỏ neo chốt cứng ngay tại tọa độ buông tay!
-        if (is_driving_x) {
-            anchor_x_ = current_x;
-        }
-        if (is_driving_y) {
-            anchor_y_ = current_y;
-        }
-
-        const float kp_pos = 2.0f;           // Gain vị trí (1/s)
-        const float max_approach_vel = 2.5f; // Vận tốc kéo về mỏ neo tối đa
-
-        float err_x_w = anchor_x_ - current_x;
-        float err_y_w = anchor_y_ - current_y;
-        float err_xb =  cy * err_x_w + sy * err_y_w;
-        float err_yb = -sy * err_x_w + cy * err_y_w;
+        // 2. MÁY TRẠNG THÁI PHANH & KHÓA VỊ TRÍ ĐỘC LẬP TỪNG TRỤC (Chống lùi, dừng êm chuẩn DJI/PX4)
+        const float stop_vel_threshold = 0.08f; // Dưới 0.08 m/s coi như đã dừng hẳn
+        const float kp_pos = 1.8f;             // Gain vị trí giữ điểm dừng
+        const float max_approach_vel = 1.2f;   // Vận tốc bù vị trí tối đa
 
         float target_vx_b = 0.0f;
         float target_vy_b = 0.0f;
 
+        // --- Xử lý trục X (Tiến / Lùi) ---
         if (is_driving_x) {
+            mode_x_ = AxisMode::DRIVING;
+            anchor_x_ = current_x; // Mỏ neo bám theo drone khi đang lái
             target_vx_b = smoothed_cmd_vx_;
         } else {
-            // Khi buông tay: Sinh vận tốc âm kéo ngược về mỏ neo, triệt tiêu hoàn toàn trôi quán tính!
-            target_vx_b = DroneMath::clamp(kp_pos * err_xb, -max_approach_vel, max_approach_vel);
+            if (mode_x_ == AxisMode::DRIVING) {
+                mode_x_ = AxisMode::BRAKING;
+            }
+
+            if (mode_x_ == AxisMode::BRAKING) {
+                // Trong lúc phanh: Mỏ neo tiếp tục cập nhật để KHÔNG sinh sai số kéo lùi
+                anchor_x_ = current_x;
+                target_vx_b = 0.0f; // Mục tiêu là triệt tiêu vận tốc về 0
+
+                if (std::abs(vx_b) < stop_vel_threshold) {
+                    mode_x_ = AxisMode::HOLD;
+                    anchor_x_ = current_x; // CHỐT CỨNG MỎ NEO TẠI VỊ TRÍ DỪNG HẲN!
+                }
+            } else { // AxisMode::HOLD
+                // Khóa cứng tại mỏ neo điểm dừng
+                float err_x_w = anchor_x_ - current_x;
+                float err_y_w = anchor_y_ - current_y;
+                float err_xb  = cy * err_x_w + sy * err_y_w;
+                target_vx_b = DroneMath::clamp(kp_pos * err_xb, -max_approach_vel, max_approach_vel);
+            }
         }
 
+        // --- Xử lý trục Y (Trái / Phải) ---
         if (is_driving_y) {
+            mode_y_ = AxisMode::DRIVING;
+            anchor_y_ = current_y; // Mỏ neo bám theo drone khi đang lái
             target_vy_b = smoothed_cmd_vy_;
         } else {
-            target_vy_b = DroneMath::clamp(kp_pos * err_yb, -max_approach_vel, max_approach_vel);
+            if (mode_y_ == AxisMode::DRIVING) {
+                mode_y_ = AxisMode::BRAKING;
+            }
+
+            if (mode_y_ == AxisMode::BRAKING) {
+                anchor_y_ = current_y;
+                target_vy_b = 0.0f;
+
+                if (std::abs(vy_b) < stop_vel_threshold) {
+                    mode_y_ = AxisMode::HOLD;
+                    anchor_y_ = current_y; // CHỐT CỨNG MỎ NEO TẠI VỊ TRÍ DỪNG HẲN!
+                }
+            } else { // AxisMode::HOLD
+                float err_x_w = anchor_x_ - current_x;
+                float err_y_w = anchor_y_ - current_y;
+                float err_yb  = -sy * err_x_w + cy * err_y_w;
+                target_vy_b = DroneMath::clamp(kp_pos * err_yb, -max_approach_vel, max_approach_vel);
+            }
         }
 
-        // 4. TẦNG VẬN TỐC (Inner Velocity Loop with Wind Integrator)
+        // 3. TẦNG VẬN TỐC (Velocity Controller with Wind Disturbance Observer)
         float evx = target_vx_b - vx_b;
         float evy = target_vy_b - vy_b;
 
-        // Tích phân bù gió (Wind Disturbance Integrator)
+        // Chỉ tích phân bù gió khi cả hai trục đang ở chế độ HOLD (dừng hẳn)
+        // và vận tốc nhỏ, tránh bão hòa tích phân khi đang phanh hãm động lực
         const float max_wind_accel = 1.5f;
         const float ki_vel = 0.40f;
         const float int_limit = max_wind_accel / ki_vel;
 
-        if (!is_driving_x) {
-            i_wind_xb_ += evx * dt;
-            i_wind_xb_ = DroneMath::clamp(i_wind_xb_, -int_limit, int_limit);
+        if (mode_x_ == AxisMode::HOLD && mode_y_ == AxisMode::HOLD &&
+            std::abs(vx_b) < 0.15f && std::abs(vy_b) < 0.15f) {
+            float evx_w = cy * evx - sy * evy;
+            float evy_w = sy * evx + cy * evy;
+
+            i_wind_xw_ += evx_w * dt;
+            i_wind_xw_ = DroneMath::clamp(i_wind_xw_, -int_limit, int_limit);
+
+            i_wind_yw_ += evy_w * dt;
+            i_wind_yw_ = DroneMath::clamp(i_wind_yw_, -int_limit, int_limit);
         }
-        if (!is_driving_y) {
-            i_wind_yb_ += evy * dt;
-            i_wind_yb_ = DroneMath::clamp(i_wind_yb_, -int_limit, int_limit);
-        }
 
-        float wind_accel_x = ki_vel * i_wind_xb_;
-        float wind_accel_y = ki_vel * i_wind_yb_;
+        float wind_accel_xw = ki_vel * i_wind_xw_;
+        float wind_accel_yw = ki_vel * i_wind_yw_;
 
-        // Phản hồi vận tốc thuần túy, loại bỏ hoàn toàn vi phân gia tốc đo
-        const float kp_vel = 2.2f;
-        float a_sp_x = kp_vel * evx + wind_accel_x;
-        float a_sp_y = kp_vel * evy + wind_accel_y;
+        float wind_accel_xb =  cy * wind_accel_xw + sy * wind_accel_yw;
+        float wind_accel_yb = -sy * wind_accel_xw + cy * wind_accel_yw;
 
-        // 5. CHUYỂN ĐỔI GIA TỐC SANG GÓC NGHIÊNG THÂN
+        // Gain vận tốc: 2.5 cho phản hồi phanh nhanh, dứt khoát
+        const float kp_vel = 2.5f;
+        float a_sp_x = kp_vel * evx + wind_accel_xb;
+        float a_sp_y = kp_vel * evy + wind_accel_yb;
+
+        // 4. CHUYỂN ĐỔI GIA TỐC SANG GÓC NGHIÊNG THÂN
         const float g = 9.80665f;
         float raw_pitch_deg = DroneMath::rad2deg(std::atan2(a_sp_x, g));
         float raw_roll_deg  = DroneMath::rad2deg(std::atan2(-a_sp_y, g));
 
-        // Cho phép góc phanh hãm lên tới 18.0° khi buông phím để dừng xe nhanh gấp đôi
-        const float max_brake_tilt = 18.0f;
-        float max_p = is_driving_x ? max_tilt_deg : max_brake_tilt;
-        float max_r = is_driving_y ? max_tilt_deg : max_brake_tilt;
+        // Khi đang phanh, cho phép nghiêng tối đa 16° để hãm đà nhanh nhất có thể
+        const float max_brake_tilt = 16.0f;
+        float max_p = (mode_x_ == AxisMode::DRIVING) ? max_tilt_deg : max_brake_tilt;
+        float max_r = (mode_y_ == AxisMode::DRIVING) ? max_tilt_deg : max_brake_tilt;
 
         raw_pitch_deg = DroneMath::clamp(raw_pitch_deg, -max_p, max_p);
         raw_roll_deg  = DroneMath::clamp(raw_roll_deg,  -max_r, max_r);
 
-        // 6. BỘ LỌC TỐC ĐỘ GÓC (Tilt Angular Rate Limiter: 180°/s)
-        // Đáp ứng góc nghiêng trong 0.12s, loại bỏ hoàn toàn hiện tượng trễ phanh
+        // 5. BỘ LỌC TỐC ĐỘ GÓC (Tilt Angular Rate Limiter: 180°/s)
         const float max_tilt_rate_deg_s = 180.0f;
-        float max_angle_step = max_tilt_rate_deg_s * dt; // ~6° mỗi chu kỳ 33ms
+        float max_angle_step = max_tilt_rate_deg_s * dt;
 
         filtered_pitch_deg_ = DroneMath::clamp(raw_pitch_deg,
                                                 filtered_pitch_deg_ - max_angle_step,
@@ -197,17 +240,17 @@ public:
                                                 filtered_roll_deg_ - max_angle_step,
                                                 filtered_roll_deg_ + max_angle_step);
 
-        float wind_pitch_trim = DroneMath::rad2deg(std::atan2(wind_accel_x, g));
-        float wind_roll_trim  = DroneMath::rad2deg(std::atan2(-wind_accel_y, g));
+        float wind_pitch_trim = DroneMath::rad2deg(std::atan2(wind_accel_xb, g));
+        float wind_roll_trim  = DroneMath::rad2deg(std::atan2(-wind_accel_yb, g));
 
-        bool is_moving = (is_driving_x || is_driving_y);
-        bool has_residual_vel = (std::abs(vx_b) > 0.15f || std::abs(vy_b) > 0.15f);
+        bool is_braking = (mode_x_ == AxisMode::BRAKING || mode_y_ == AxisMode::BRAKING);
+        bool is_hover = (mode_x_ == AxisMode::HOLD && mode_y_ == AxisMode::HOLD);
 
         PositionControlOutput out;
         out.pitch_deg = filtered_pitch_deg_;
         out.roll_deg  = filtered_roll_deg_;
-        out.is_hover  = (!is_moving && !has_residual_vel);
-        out.is_braking = (!is_moving && has_residual_vel);
+        out.is_hover  = is_hover;
+        out.is_braking = is_braking;
         out.anchor_x = anchor_x_;
         out.anchor_y = anchor_y_;
         out.wind_pitch_trim_deg = wind_pitch_trim;
@@ -217,16 +260,29 @@ public:
 
     float anchor_x() const { return anchor_x_; }
     float anchor_y() const { return anchor_y_; }
-    float wind_pitch_trim() const { return DroneMath::rad2deg(std::atan2(0.40f * i_wind_xb_, 9.80665f)); }
-    float wind_roll_trim() const { return DroneMath::rad2deg(std::atan2(-0.40f * i_wind_yb_, 9.80665f)); }
+    float wind_pitch_trim(float current_yaw_rad = 0.0f) const {
+        float cy = std::cos(current_yaw_rad);
+        float sy = std::sin(current_yaw_rad);
+        float wind_accel_xb = cy * (0.40f * i_wind_xw_) + sy * (0.40f * i_wind_yw_);
+        return DroneMath::rad2deg(std::atan2(wind_accel_xb, 9.80665f));
+    }
+    float wind_roll_trim(float current_yaw_rad = 0.0f) const {
+        float cy = std::cos(current_yaw_rad);
+        float sy = std::sin(current_yaw_rad);
+        float wind_accel_yb = -sy * (0.40f * i_wind_xw_) + cy * (0.40f * i_wind_yw_);
+        return DroneMath::rad2deg(std::atan2(-wind_accel_yb, 9.80665f));
+    }
 
 private:
     float anchor_x_{0.0f};
     float anchor_y_{0.0f};
     bool has_anchor_{false};
 
-    float i_wind_xb_{0.0f};
-    float i_wind_yb_{0.0f};
+    AxisMode mode_x_{AxisMode::HOLD};
+    AxisMode mode_y_{AxisMode::HOLD};
+
+    float i_wind_xw_{0.0f}; // Tích phân bù gió trục X (World)
+    float i_wind_yw_{0.0f}; // Tích phân bù gió trục Y (World)
 
     float smoothed_cmd_vx_{0.0f};
     float smoothed_cmd_vy_{0.0f};
