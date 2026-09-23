@@ -2,10 +2,12 @@
  * @file firmware_esp32.ino
  * @brief Firmware Điều khiển Bay Quadrotor HITL cho ESP32 / ESP32-C3 / ESP32-S3
  * 
- * Tương thích 100% với:
- * - ESP32 Classic (Dual-Core 240MHz)
- * - ESP32-C3 (Single-Core RISC-V 160MHz)
- * - ESP32-S3 (Dual-Core 240MHz)
+ * ============================================================================
+ * KIẾN TRÚC PHẦN MỀM:
+ * 1. Toàn bộ tham số, hệ số PID, giới hạn góc, tốc độ phanh ĐƯỢC ĐẶT TẠI: flight_config.h
+ * 2. File này chỉ chứa luồng xử lý FreeRTOS và thuật toán lõi (Core Logic).
+ * 3. Khi cần tinh chỉnh phản ứng của Drone, chỉ cần mở file flight_config.h.
+ * ============================================================================
  */
 
 #include <Arduino.h>
@@ -15,6 +17,10 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+
+#include "flight_config.h"
+
+using namespace FlightConfig;
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -84,7 +90,7 @@ namespace DroneMath {
 }
 
 // ============================================================================
-// 3. BỘ ĐIỀU KHIỂN PID (PID CONTROLLER)
+// 3. BỘ ĐIỀU KHIỂN PID CƠ BẢN (PID CONTROLLER)
 // ============================================================================
 class PIDController {
 public:
@@ -107,7 +113,7 @@ public:
             prev_error_ = error;
             first_run_ = false;
         }
-        if (dt <= 0.0) dt = 0.005;
+        if (dt <= 0.0) dt = Timing::DT;
 
         double p_term = kp_ * error;
         integral_ += error * dt;
@@ -133,30 +139,32 @@ private:
 
 // ============================================================================
 // 4. BỘ ĐIỀU KHIỂN ĐỘ CAO (ALTITUDE CONTROLLER)
+//    Tham số đọc từ namespace FlightConfig::Altitude
 // ============================================================================
 class AltitudeController {
 public:
-    AltitudeController(double hover_thrust = 0.59, 
-                       double kp = 0.35, double ki = 0.08, double kd = 0.22)
-        : hover_thrust_(hover_thrust),
-          pid_(kp, ki, 0.0, -0.30, 0.25, 0.15) {}
+    AltitudeController()
+        : hover_thrust_(Altitude::HOVER_THRUST),
+          pid_(Altitude::KP_ALT, Altitude::KI_ALT, 0.0, -0.30, 0.25, Altitude::INT_ALT_LIMIT) {}
 
     void reset() { pid_.reset(); }
 
     float compute_thrust(double target_alt, double current_alt, double vz, double dt) {
         double delta_thrust = pid_.update(target_alt, current_alt, dt);
-        const double kv = 0.32;
-        double total_thrust = hover_thrust_ + delta_thrust - kv * vz;
-        return static_cast<float>(std::clamp(total_thrust, 0.10, 0.85));
+        double total_thrust = hover_thrust_ + delta_thrust - Altitude::KV_DAMPING * vz;
+        return static_cast<float>(std::clamp(total_thrust, 
+                                             static_cast<double>(Altitude::MIN_TOTAL_THRUST), 
+                                             static_cast<double>(Altitude::MAX_TOTAL_THRUST)));
     }
 
 private:
-    double hover_thrust_{0.59};
+    double hover_thrust_{Altitude::HOVER_THRUST};
     PIDController pid_;
 };
 
 // ============================================================================
 // 5. BỘ ĐIỀU KHIỂN VỊ TRÍ 2D & PHANH DỪNG (POSITION CONTROLLER)
+//    Tham số đọc từ namespace FlightConfig::Position
 // ============================================================================
 struct PositionControlOutput {
     float roll_deg{0.0f};
@@ -196,19 +204,18 @@ public:
         float current_yaw_rad,
         float cmd_vx_body, float cmd_vy_body,
         bool is_driving_x, bool is_driving_y,
-        float max_tilt_deg,
-        float dt = 0.005f
+        float max_tilt_deg = Position::MAX_TILT_DRIVING_DEG,
+        float dt = Timing::DT
     ) {
         if (!has_anchor_) set_anchor(current_x, current_y);
-        if (dt <= 0.001f || dt > 0.1f) dt = 0.005f;
+        if (dt <= 0.001f || dt > 0.1f) dt = Timing::DT;
 
         float cy = std::cos(current_yaw_rad);
         float sy = std::sin(current_yaw_rad);
         float vx_b = vx_body;
         float vy_b = vy_body;
 
-        const float max_accel = 3.5f;
-        const float max_dv = max_accel * dt;
+        const float max_dv = Position::MAX_CMD_ACCEL * dt;
 
         if (is_driving_x) {
             if (!was_driving_x_) smoothed_cmd_vx_ = vx_b;
@@ -229,9 +236,6 @@ public:
         was_driving_x_ = is_driving_x;
         was_driving_y_ = is_driving_y;
 
-        const float stop_vel_threshold = 0.08f;
-        const float kp_pos = 1.8f;
-        const float max_approach_vel = 1.2f;
         float target_vx_b = 0.0f;
         float target_vy_b = 0.0f;
 
@@ -245,7 +249,7 @@ public:
             if (mode_x_ == AxisMode::BRAKING) {
                 anchor_x_ = current_x;
                 target_vx_b = 0.0f;
-                if (std::abs(vx_b) < stop_vel_threshold) {
+                if (std::abs(vx_b) < Position::STOP_VEL_THRESHOLD) {
                     mode_x_ = AxisMode::HOLD;
                     anchor_x_ = current_x;
                 }
@@ -253,7 +257,7 @@ public:
                 float err_x_w = anchor_x_ - current_x;
                 float err_y_w = anchor_y_ - current_y;
                 float err_xb  = cy * err_x_w + sy * err_y_w;
-                target_vx_b = DroneMath::clamp(kp_pos * err_xb, -max_approach_vel, max_approach_vel);
+                target_vx_b = DroneMath::clamp(Position::KP_POS * err_xb, -Position::MAX_APPROACH_VEL, Position::MAX_APPROACH_VEL);
             }
         }
 
@@ -267,7 +271,7 @@ public:
             if (mode_y_ == AxisMode::BRAKING) {
                 anchor_y_ = current_y;
                 target_vy_b = 0.0f;
-                if (std::abs(vy_b) < stop_vel_threshold) {
+                if (std::abs(vy_b) < Position::STOP_VEL_THRESHOLD) {
                     mode_y_ = AxisMode::HOLD;
                     anchor_y_ = current_y;
                 }
@@ -275,16 +279,14 @@ public:
                 float err_x_w = anchor_x_ - current_x;
                 float err_y_w = anchor_y_ - current_y;
                 float err_yb  = -sy * err_x_w + cy * err_y_w;
-                target_vy_b = DroneMath::clamp(kp_pos * err_yb, -max_approach_vel, max_approach_vel);
+                target_vy_b = DroneMath::clamp(Position::KP_POS * err_yb, -Position::MAX_APPROACH_VEL, Position::MAX_APPROACH_VEL);
             }
         }
 
         float evx = target_vx_b - vx_b;
         float evy = target_vy_b - vy_b;
 
-        const float max_wind_accel = 1.5f;
-        const float ki_vel = 0.40f;
-        const float int_limit = max_wind_accel / ki_vel;
+        const float int_limit = Position::MAX_WIND_ACCEL / Position::KI_VEL;
 
         if (mode_x_ == AxisMode::HOLD && mode_y_ == AxisMode::HOLD &&
             std::abs(vx_b) < 0.15f && std::abs(vy_b) < 0.15f) {
@@ -296,26 +298,23 @@ public:
             i_wind_yw_ = DroneMath::clamp(i_wind_yw_, -int_limit, int_limit);
         }
 
-        float wind_accel_xb =  cy * (ki_vel * i_wind_xw_) + sy * (ki_vel * i_wind_yw_);
-        float wind_accel_yb = -sy * (ki_vel * i_wind_xw_) + cy * (ki_vel * i_wind_yw_);
+        float wind_accel_xb =  cy * (Position::KI_VEL * i_wind_xw_) + sy * (Position::KI_VEL * i_wind_yw_);
+        float wind_accel_yb = -sy * (Position::KI_VEL * i_wind_xw_) + cy * (Position::KI_VEL * i_wind_yw_);
 
-        const float kp_vel = 2.5f;
-        float a_sp_x = kp_vel * evx + wind_accel_xb;
-        float a_sp_y = kp_vel * evy + wind_accel_yb;
+        float a_sp_x = Position::KP_VEL * evx + wind_accel_xb;
+        float a_sp_y = Position::KP_VEL * evy + wind_accel_yb;
 
         const float g = 9.80665f;
         float raw_pitch_deg = DroneMath::rad2deg(std::atan2(a_sp_x, g));
         float raw_roll_deg  = DroneMath::rad2deg(std::atan2(-a_sp_y, g));
 
-        const float max_brake_tilt = 16.0f;
-        float max_p = (mode_x_ == AxisMode::DRIVING) ? max_tilt_deg : max_brake_tilt;
-        float max_r = (mode_y_ == AxisMode::DRIVING) ? max_tilt_deg : max_brake_tilt;
+        float max_p = (mode_x_ == AxisMode::DRIVING) ? max_tilt_deg : Position::MAX_TILT_BRAKING_DEG;
+        float max_r = (mode_y_ == AxisMode::DRIVING) ? max_tilt_deg : Position::MAX_TILT_BRAKING_DEG;
 
         raw_pitch_deg = DroneMath::clamp(raw_pitch_deg, -max_p, max_p);
         raw_roll_deg  = DroneMath::clamp(raw_roll_deg,  -max_r, max_r);
 
-        const float max_tilt_rate_deg_s = 180.0f;
-        float max_angle_step = max_tilt_rate_deg_s * dt;
+        float max_angle_step = Position::MAX_TILT_RATE_DEG_S * dt;
 
         filtered_pitch_deg_ = DroneMath::clamp(raw_pitch_deg, filtered_pitch_deg_ - max_angle_step, filtered_pitch_deg_ + max_angle_step);
         filtered_roll_deg_  = DroneMath::clamp(raw_roll_deg,  filtered_roll_deg_ - max_angle_step,  filtered_roll_deg_ + max_angle_step);
@@ -342,14 +341,16 @@ private:
 
 // ============================================================================
 // 6. BỘ TRỘN ĐỘNG CƠ (MOTOR MIXER)
+//    Tham số đọc từ namespace FlightConfig::Mixer
 // ============================================================================
 class MotorMixer {
 public:
-    explicit MotorMixer(float max_rot_velocity = 1000.0f) : max_rot_velocity_(max_rot_velocity) {}
+    explicit MotorMixer(float max_rot_velocity = Mixer::MAX_MOTOR_ROT_VELOCITY) 
+        : max_rot_velocity_(max_rot_velocity) {}
 
     std::array<float, 4> compute_motor_speeds(float thrust, float roll, float pitch, float yaw, bool is_armed = true) const {
         std::array<float, 4> speeds{0.0f, 0.0f, 0.0f, 0.0f};
-        if (!is_armed || thrust <= 0.02f) return speeds;
+        if (!is_armed || thrust <= Mixer::MIN_THRUST_THRESHOLD) return speeds;
 
         float u0 = thrust - roll - pitch - yaw; // Front-Right (CCW)
         float u1 = thrust + roll + pitch - yaw; // Rear-Left   (CCW)
@@ -376,18 +377,15 @@ public:
     }
 
 private:
-    float max_rot_velocity_{1000.0f};
+    float max_rot_velocity_{Mixer::MAX_MOTOR_ROT_VELOCITY};
 };
 
 // ============================================================================
-// 7. TOÀN CỤC & TÁC VỤ BAY
+// 7. KHỞI TẠO ĐỐI TƯỢNG TOÀN CỤC & TÁC VỤ BAY
 // ============================================================================
-static MotorMixer g_mixer(1000.0f);
-static AltitudeController g_alt_controller(0.59, 0.35, 0.08, 0.22);
+static MotorMixer g_mixer(Mixer::MAX_MOTOR_ROT_VELOCITY);
+static AltitudeController g_alt_controller;
 static PositionController g_pos_controller;
-
-static PIDController g_pid_roll(0.15, 0.02, 0.008, -0.25, 0.25, 0.05);
-static PIDController g_pid_pitch(0.15, 0.02, 0.008, -0.25, 0.25, 0.05);
 
 static portMUX_TYPE g_data_mutex = portMUX_INITIALIZER_UNLOCKED;
 static SensorPacket g_sensor_data;
@@ -406,13 +404,14 @@ static float g_int_pitch = 0.0f;
 // Task 200Hz: Chạy vòng lặp điều khiển thời gian thực
 void flight_control_task(void* pvParameters) {
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t period_ticks = pdMS_TO_TICKS(5); // 5ms = 200Hz
+    const TickType_t period_ticks = pdMS_TO_TICKS(Timing::LOOP_PERIOD_TICKS_MS);
 
     while (true) {
         vTaskDelayUntil(&last_wake_time, period_ticks);
 
         uint32_t now_ms = millis();
-        if (now_ms - g_last_packet_time_ms > 350) {
+        // Fail-safe: Ngắt khẩn cấp nếu mất tín hiệu từ máy tính
+        if (now_ms - g_last_packet_time_ms > Hardware::FAILSAFE_TIMEOUT_MS) {
             g_connected = false;
             g_is_armed = false;
         }
@@ -431,6 +430,7 @@ void flight_control_task(void* pvParameters) {
         s = g_sensor_data;
         portEXIT_CRITICAL(&g_data_mutex);
 
+        // Khởi tạo điểm neo ban đầu khi mới kết nối
         if (!g_init_yaw_done) {
             g_target_yaw_rad = s.yaw;
             g_pos_controller.set_anchor(s.x, s.y);
@@ -440,24 +440,30 @@ void flight_control_task(void* pvParameters) {
 
         g_is_armed = (s.flags & CTRL_FLAG_ARMED);
         if (s.flags & CTRL_FLAG_EMERGENCY) g_is_armed = false;
+
+        // Cất cánh tự động: tăng dần độ cao theo chu kỳ
         if (s.flags & CTRL_FLAG_TAKEOFF) {
-            // Leo thang máy mượt mà: mỗi 5ms tăng 0.004m (~0.8 m/s climb rate), chống sốc ga
-            g_target_alt = std::min(2.0f, g_target_alt + 0.004f);
+            g_target_alt = std::min(FlightLogic::TAKEOFF_TARGET_ALT_M, 
+                                    g_target_alt + FlightLogic::TAKEOFF_STEP_PER_TICK);
             g_is_armed = true;
         }
+
+        // Hạ cánh tự động: giảm dần độ cao, chạm đất thì ngắt động cơ
         if (s.flags & CTRL_FLAG_LAND) {
-            g_target_alt = std::max(0.05f, g_target_alt - 0.003f);
-            if (s.z < 0.10f) g_is_armed = false;
+            g_target_alt = std::max(0.05f, g_target_alt - FlightLogic::LAND_STEP_PER_TICK);
+            if (s.z < FlightLogic::TOUCHDOWN_ALT_THRESHOLD) g_is_armed = false;
         }
 
+        // Cập nhật góc Yaw đặt khi người dùng xoay cần lái
         if (std::abs(s.cmd_yaw_rate) > 0.01f) {
-            g_target_yaw_rad = DroneMath::normalize_angle(g_target_yaw_rad + s.cmd_yaw_rate * 0.005f);
+            g_target_yaw_rad = DroneMath::normalize_angle(g_target_yaw_rad + s.cmd_yaw_rate * Timing::DT);
         }
 
+        // Điều khiển độ cao Z thủ công
         bool alt_active = (s.flags & CTRL_FLAG_ALT_ACTIVE);
         if (alt_active) {
-            g_target_alt += s.cmd_alt_vel * 0.005f;
-            g_target_alt = DroneMath::clamp(g_target_alt, 0.3f, 10.0f);
+            g_target_alt += s.cmd_alt_vel * Timing::DT;
+            g_target_alt = DroneMath::clamp(g_target_alt, FlightLogic::MIN_FLIGHT_ALT_M, FlightLogic::MAX_FLIGHT_ALT_M);
         } else {
             if (g_alt_was_active) g_target_alt = s.z;
         }
@@ -466,53 +472,55 @@ void flight_control_task(void* pvParameters) {
         bool is_driving_x = (s.flags & CTRL_FLAG_DRIVING_X);
         bool is_driving_y = (s.flags & CTRL_FLAG_DRIVING_Y);
 
+        // 1. VÒNG NGOÀI: Điều khiển Vị trí X/Y -> Ra góc nghiêng mong muốn (Roll, Pitch)
         auto pos_out = g_pos_controller.update(
             s.x, s.y, s.vx, s.vy, s.yaw,
             s.cmd_vx, s.cmd_vy, is_driving_x, is_driving_y,
-            12.0f, 0.005f
+            Position::MAX_TILT_DRIVING_DEG, Timing::DT
         );
 
-        float total_thrust = g_alt_controller.compute_thrust(g_target_alt, s.z, s.vz, 0.005f);
-        float cos_tilt = std::max(0.65f, std::cos(s.roll) * std::cos(s.pitch));
+        // 2. Điều khiển Lực nâng thẳng đứng (Altitude Controller)
+        float total_thrust = g_alt_controller.compute_thrust(g_target_alt, s.z, s.vz, Timing::DT);
+        float cos_tilt = std::max(Altitude::MIN_COS_TILT, std::cos(s.roll) * std::cos(s.pitch));
         float effective_thrust = total_thrust / cos_tilt;
 
         float target_r_rad = 0.0f;
         float target_p_rad = 0.0f;
-        // Chỉ kích hoạt nghiêng thân lái vị trí khi đã nhấc khỏi mặt đất (> 0.25m)
-        // Khi sát mặt đất, khóa phẳng tuyệt đối Roll=0, Pitch=0 để 4 chân rời đất êm ái
-        if (s.z > 0.25f) {
+        // Chỉ kích hoạt nghiêng thân lái vị trí khi đã nhấc khỏi mặt đất
+        // Khi sát đất (< MIN_TAKEOFF_ALT_FOR_TILT), khóa phẳng Roll=0, Pitch=0 để 4 chân rời đất an toàn
+        if (s.z > FlightLogic::MIN_TAKEOFF_ALT_FOR_TILT) {
             target_r_rad = DroneMath::deg2rad(pos_out.roll_deg);
             target_p_rad = DroneMath::deg2rad(pos_out.pitch_deg);
         } else {
             g_pos_controller.set_anchor(s.x, s.y);
         }
 
-        // Attitude Controller: 100% khớp chuẩn vehicle_commander.cpp đã bay thực nghiệm
-        const float kp_att = 0.45f;
-        const float ki_att = 0.05f;
-        const float kd_att = 0.08f;
-        const float kp_yaw = 0.30f;
-        const float kd_yaw = 0.15f;
-
+        // 3. VÒNG TRONG: Điều khiển Góc thái độ (Attitude PID + Gyro Rate Damping)
+        // Roll PID
         float err_roll = target_r_rad - s.roll;
-        g_int_roll += err_roll * 0.005f;
-        g_int_roll = DroneMath::clamp(g_int_roll, -0.05f, 0.05f);
-        float tau_roll = kp_att * err_roll + ki_att * g_int_roll - kd_att * s.p;
+        g_int_roll += err_roll * Timing::DT;
+        g_int_roll = DroneMath::clamp(g_int_roll, -Attitude::INT_ATT_LIMIT, Attitude::INT_ATT_LIMIT);
+        float tau_roll = Attitude::KP_ATT * err_roll + Attitude::KI_ATT * g_int_roll - Attitude::KD_ATT * s.p;
 
+        // Pitch PID
         float err_pitch = target_p_rad - s.pitch;
-        g_int_pitch += err_pitch * 0.005f;
-        g_int_pitch = DroneMath::clamp(g_int_pitch, -0.05f, 0.05f);
-        float tau_pitch = kp_att * err_pitch + ki_att * g_int_pitch - kd_att * s.q;
+        g_int_pitch += err_pitch * Timing::DT;
+        g_int_pitch = DroneMath::clamp(g_int_pitch, -Attitude::INT_ATT_LIMIT, Attitude::INT_ATT_LIMIT);
+        float tau_pitch = Attitude::KP_ATT * err_pitch + Attitude::KI_ATT * g_int_pitch - Attitude::KD_ATT * s.q;
 
+        // Yaw PD
         float err_yaw = DroneMath::normalize_angle(g_target_yaw_rad - s.yaw);
-        float tau_yaw = kp_yaw * err_yaw - kd_yaw * s.r;
+        float tau_yaw = Attitude::KP_YAW * err_yaw - Attitude::KD_YAW * s.r;
 
-        tau_roll  = DroneMath::clamp(tau_roll, -0.25f, 0.25f);
-        tau_pitch = DroneMath::clamp(tau_pitch, -0.25f, 0.25f);
-        tau_yaw   = DroneMath::clamp(tau_yaw, -0.20f, 0.20f);
+        // Giới hạn mô-men xoắn ngõ ra
+        tau_roll  = DroneMath::clamp(tau_roll, -Attitude::MAX_TAU_ROLL, Attitude::MAX_TAU_ROLL);
+        tau_pitch = DroneMath::clamp(tau_pitch, -Attitude::MAX_TAU_PITCH, Attitude::MAX_TAU_PITCH);
+        tau_yaw   = DroneMath::clamp(tau_yaw, -Attitude::MAX_TAU_YAW, Attitude::MAX_TAU_YAW);
 
+        // 4. BỘ TRỘN ĐỘNG CƠ: Phân bổ lực cho 4 cánh quạt (Motor Mixer)
         auto speeds = g_mixer.compute_motor_speeds(effective_thrust, tau_roll, tau_pitch, tau_yaw, g_is_armed);
 
+        // Đóng gói dữ liệu gửi ngược về máy tính qua Serial
         ActuatorPacket out_pkt;
         out_pkt.header[0] = 0x55; out_pkt.header[1] = 0xAA;
         out_pkt.w0 = speeds[0]; out_pkt.w1 = speeds[1];
@@ -530,12 +538,12 @@ void flight_control_task(void* pvParameters) {
 }
 
 void setup() {
-    pinMode(2, OUTPUT);
-    digitalWrite(2, LOW);
+    pinMode(Hardware::STATUS_LED_PIN, OUTPUT);
+    digitalWrite(Hardware::STATUS_LED_PIN, LOW);
 
-    // Tăng bộ đệm phần cứng RX lên 2048 bytes để chống tràn khi truyền 100Hz
-    Serial.setRxBufferSize(2048);
-    Serial.begin(921600);
+    // Tăng bộ đệm phần cứng RX lên 2048 bytes để chống tràn khi truyền 100Hz-200Hz
+    Serial.setRxBufferSize(Hardware::UART_RX_BUFFER_SIZE);
+    Serial.begin(Hardware::UART_BAUD_RATE);
     while (!Serial && millis() < 2000);
 
 #if CONFIG_FREERTOS_UNICORE || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2)
@@ -589,7 +597,7 @@ void loop() {
                     g_connected = true;
 
                     // Nhấp nháy LED pin 2 để quan sát trực quan
-                    digitalWrite(2, (millis() / 200) % 2);
+                    digitalWrite(Hardware::STATUS_LED_PIN, (millis() / 200) % 2);
 
                     // Xóa gói hợp lệ khỏi buffer
                     memmove(rx_buf, rx_buf + sizeof(SensorPacket), rx_len - sizeof(SensorPacket));
