@@ -102,5 +102,8 @@ MESA_D3D12_DEFAULT_ADAPTER_NAME=GeForce GALLIUM_DRIVER=d3d12 gz sim -r /home/do/
 #   gz topic -t "/world/default/wind" -m gz.msgs.Wind -p "linear_velocity: {x: 0.0, y: 0.0, z: 0.0}"
 
 
+Bước 1: Mở PowerShell trên Windows
+Mở Windows PowerShell (hoặc Terminal Windows) và gõ lệnh:
+        usbipd list
 
 
