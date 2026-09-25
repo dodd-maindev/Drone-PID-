@@ -17,16 +17,21 @@
 #include <cstring>
 #include <vector>
 #include <cmath>
+#include <mutex>
 #include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include <gz/transport/Node.hh>
 #include <gz/msgs/odometry.pb.h>
 #include <gz/msgs/actuators.pb.h>
+#include <gz/msgs/gui_camera.pb.h>
+#include <gz/msgs/boolean.pb.h>
+#include <gz/msgs/cameratrack.pb.h>
 
 #include "comm/telemetry_packet.hpp"
 #include "math/math_utils.hpp"
@@ -137,6 +142,24 @@ int open_serial_port(const std::string& port_name, int baud_rate = B921600) {
         return -1;
     }
 
+    // Reset ESP32 một cách an toàn và giải phóng khỏi chế độ Bootloader/Reset (DTR/RTS):
+    int status = 0;
+    if (ioctl(fd, TIOCMGET, &status) == 0) {
+        // 1. Kéo RTS lên cao (EN xuống thấp = Reset)
+        status |= TIOCM_RTS;
+        status &= ~TIOCM_DTR;
+        ioctl(fd, TIOCMSET, &status);
+        usleep(50000); // 50ms xung reset
+
+        // 2. Hạ cả RTS và DTR (EN lên cao, IO0 lên cao = Chế độ chạy bình thường)
+        status &= ~TIOCM_RTS;
+        status &= ~TIOCM_DTR;
+        ioctl(fd, TIOCMSET, &status);
+        usleep(250000); // 250ms cho ESP32 khởi động vào firmware
+    }
+
+    tcflush(fd, TCIOFLUSH);
+
     return fd;
 }
 
@@ -207,6 +230,8 @@ void on_odometry(const gz::msgs::Odometry& msg) {
 
     g_odom_connected = true;
 }
+
+
 
 int main(int argc, char** argv) {
     std::string serial_port = "";
@@ -305,6 +330,25 @@ int main(int argc, char** argv) {
     }
     std::cout << "[✓] Đã nhận tín hiệu Odometry 100Hz từ Gazebo Sim!" << std::endl;
 
+    // Camera tự động Follow drone x500 khi khởi động
+    {
+        auto cam_pub = gz_node.Advertise<gz::msgs::CameraTrack>("/gui/track");
+        gz::msgs::CameraTrack msg;
+        msg.set_track_mode(gz::msgs::CameraTrack::FOLLOW);
+        msg.mutable_follow_target()->set_name("x500");
+        msg.set_follow_pgain(0.03);
+        auto* fo = msg.mutable_follow_offset();
+        fo->set_x(-5.0);
+        fo->set_y(0.0);
+        fo->set_z(2.5);
+        // Publish 3 lần cách 300ms để đảm bảo Gazebo GUI nhận được
+        for (int i = 0; i < 3; i++) {
+            cam_pub.Publish(msg);
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
+        std::cout << "[✓] Camera tự động Follow drone x500!" << std::endl;
+    }
+
     set_nonblocking_terminal(true);
 
     // Trạng thái lệnh người lái
@@ -401,15 +445,8 @@ int main(int argc, char** argv) {
                 std::cout << "\n[⚠️ EMERGENCY] Nút BACK Xbox 360 -> Phanh khẩn cấp / DISARM!" << std::endl;
             }
 
-            // Phím LB / RB: Giảm / Tăng tốc độ tối đa
-            if ((btns & XBOX_BTN_LB) && !(last_xbox_buttons & XBOX_BTN_LB)) {
-                max_speed_mps = std::max(1.0f, max_speed_mps - 1.0f);
-                std::cout << "\n[⚡ CHẾ ĐỘ] Giảm tốc độ tối đa: " << max_speed_mps << " m/s" << std::endl;
-            }
-            if ((btns & XBOX_BTN_RB) && !(last_xbox_buttons & XBOX_BTN_RB)) {
-                max_speed_mps = std::min(5.0f, max_speed_mps + 1.0f);
-                std::cout << "\n[⚡ CHẾ ĐỘ] Tăng tốc độ tối đa: " << max_speed_mps << " m/s" << std::endl;
-            }
+            // LB/RB: Không dùng (dùng cuộn chuột Gazebo để zoom)
+
 
             // Phím X: Xoay quanh trục sang trái (Yaw Left CCW)
             if (btns & XBOX_BTN_X) {
@@ -422,17 +459,22 @@ int main(int argc, char** argv) {
                 gp_yaw_active = true;
             }
 
-            constexpr int DEADZONE = 4000;
+            constexpr int DEADZONE = 7800;
 
             // Con lăn trái (Left Stick Y): Điều khiển ĐỘ CAO (Bay lên / Hạ xuống)
+            // Chỉ cho phép can thiệp hủy cất cánh tự động khi người lái cố tình gạt cần mạnh (> 16000)
             if (latest_xbox_pkt.thumb_ly > DEADZONE) {
                 gp_alt_vel = static_cast<float>(latest_xbox_pkt.thumb_ly - DEADZONE) / (32767.0f - DEADZONE) * 1.5f;
-                gp_alt_active = true;
-                req_takeoff = false; // Ngắt cờ cất cánh tự động khi người lái chủ động chỉnh độ cao
+                if (!req_takeoff || latest_xbox_pkt.thumb_ly > 16000) {
+                    gp_alt_active = true;
+                    req_takeoff = false;
+                }
             } else if (latest_xbox_pkt.thumb_ly < -DEADZONE) {
                 gp_alt_vel = static_cast<float>(latest_xbox_pkt.thumb_ly + DEADZONE) / (32768.0f - DEADZONE) * 1.2f;
-                gp_alt_active = true;
-                req_takeoff = false; // Ngắt cờ cất cánh tự động
+                if (!req_takeoff || latest_xbox_pkt.thumb_ly < -16000) {
+                    gp_alt_active = true;
+                    req_takeoff = false;
+                }
             }
 
             // Con lăn phải (Right Stick Y): Tiến / Lùi (Pitch)
@@ -572,6 +614,8 @@ int main(int argc, char** argv) {
         bool yaw_active   = gp_yaw_active || kb_yaw_active;
         float send_cmd_yaw = gp_yaw_active ? gp_yaw_rate : (kb_yaw_active ? yaw_rate_cmd : 0.0f);
 
+
+
         // 3. Đóng gói SensorPacket (68 bytes) gửi sang ESP32
         SensorPacket send_pkt;
         memset(&send_pkt, 0, sizeof(send_pkt));
@@ -612,44 +656,44 @@ int main(int argc, char** argv) {
         write(serial_fd, (uint8_t*)&send_pkt, sizeof(send_pkt));
         tx_packets++;
 
-        // 4. Đọc phản hồi ActuatorPacket từ ESP32
-        uint8_t read_buf[64];
-        int bytes_read = read(serial_fd, read_buf, sizeof(read_buf));
-        static float last_motor_w0 = 0.0f;
-        if (bytes_read > 0) {
+        // 4. Đọc toàn bộ phản hồi ActuatorPacket từ ESP32 có trong bộ đệm Serial
+        uint8_t read_buf[256];
+        int bytes_read = 0;
+        while ((bytes_read = read(serial_fd, read_buf, sizeof(read_buf))) > 0) {
             rx_buffer.insert(rx_buffer.end(), read_buf, read_buf + bytes_read);
+        }
 
-            // Tìm và giải mã gói tin ActuatorPacket (28 bytes)
-            while (rx_buffer.size() >= sizeof(ActuatorPacket)) {
-                if (rx_buffer[0] == 0x55 && rx_buffer[1] == 0xAA) {
-                    ActuatorPacket in_pkt;
-                    memcpy(&in_pkt, rx_buffer.data(), sizeof(ActuatorPacket));
+        static float last_motor_w0 = 0.0f;
+        // Tìm và giải mã gói tin ActuatorPacket (28 bytes)
+        while (rx_buffer.size() >= sizeof(ActuatorPacket)) {
+            if (rx_buffer[0] == 0x55 && rx_buffer[1] == 0xAA) {
+                ActuatorPacket in_pkt;
+                memcpy(&in_pkt, rx_buffer.data(), sizeof(ActuatorPacket));
 
-                    uint8_t cs = compute_packet_checksum((uint8_t*)&in_pkt + 2, sizeof(ActuatorPacket) - 3);
-                    if (cs == in_pkt.checksum) {
-                        // Nhận gói tin hợp lệ từ ESP32! Bơm sang Gazebo Sim
-                        gz::msgs::Actuators motor_msg;
-                        motor_msg.add_velocity(in_pkt.w0);
-                        motor_msg.add_velocity(in_pkt.w1);
-                        motor_msg.add_velocity(in_pkt.w2);
-                        motor_msg.add_velocity(in_pkt.w3);
-                        motor_pub.Publish(motor_msg);
-                        motor_pub_alt.Publish(motor_msg);
+                uint8_t cs = compute_packet_checksum((uint8_t*)&in_pkt + 2, sizeof(ActuatorPacket) - 3);
+                if (cs == in_pkt.checksum) {
+                    // Nhận gói tin hợp lệ từ ESP32! Bơm sang Gazebo Sim
+                    gz::msgs::Actuators motor_msg;
+                    motor_msg.add_velocity(in_pkt.w0);
+                    motor_msg.add_velocity(in_pkt.w1);
+                    motor_msg.add_velocity(in_pkt.w2);
+                    motor_msg.add_velocity(in_pkt.w3);
+                    motor_pub.Publish(motor_msg);
+                    motor_pub_alt.Publish(motor_msg);
 
-                        rx_packets++;
-                        last_esp_pitch = in_pkt.target_pitch_deg;
-                        last_esp_roll  = in_pkt.target_roll_deg;
-                        last_motor_w0  = in_pkt.w0;
+                    rx_packets++;
+                    last_esp_pitch = in_pkt.target_pitch_deg;
+                    last_esp_roll  = in_pkt.target_roll_deg;
+                    last_motor_w0  = in_pkt.w0;
 
-                        // Xóa gói đã xử lý khỏi buffer
-                        rx_buffer.erase(rx_buffer.begin(), rx_buffer.begin() + sizeof(ActuatorPacket));
-                    } else {
-                        // Checksum sai, dịch 1 byte để tìm lại đồng bộ
-                        rx_buffer.erase(rx_buffer.begin());
-                    }
+                    // Xóa gói đã xử lý khỏi buffer
+                    rx_buffer.erase(rx_buffer.begin(), rx_buffer.begin() + sizeof(ActuatorPacket));
                 } else {
+                    // Checksum sai, dịch 1 byte để tìm lại đồng bộ
                     rx_buffer.erase(rx_buffer.begin());
                 }
+            } else {
+                rx_buffer.erase(rx_buffer.begin());
             }
         }
 

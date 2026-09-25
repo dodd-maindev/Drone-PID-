@@ -2,16 +2,10 @@
 # HƯỚNG DẪN CHẠY MÔ PHỎNG & ĐIỀU KHIỂN DRONE C++ (KHÔNG CẦN PX4)
 # ============================================================
 
-# BƯỚC 1: Khởi động mô phỏng Gazebo (Terminal 1)
-export GZ_SIM_RESOURCE_PATH=/home/do/drone_control_cpp/simulation/models
-gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
+# BƯỚC 1: Khởi động mô phỏng Gazebo (Terminal 1) - Tự động tối ưu GPU Nvidia
+~/drone_control_cpp/run_gazebo.sh
+# Hoặc: ./run_gazebo.sh (nếu đang ở thư mục gốc ~)
 
-# (Lưu ý WSL2: Nếu muốn chạy mượt bằng GPU rời Nvidia):
- export GZ_SIM_RESOURCE_PATH=/home/do/drone_control_cpp/simulation/models
- MESA_D3D12_DEFAULT_ADAPTER_NAME=GeForce GALLIUM_DRIVER=d3d12 gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
-
-export GZ_SIM_RESOURCE_PATH=/home/do/drone_control_cpp/simulation/models
-MESA_D3D12_DEFAULT_ADAPTER_NAME=GeForce GALLIUM_DRIVER=d3d12 gz sim -r /home/do/drone_control_cpp/simulation/worlds/drone_world.sdf
 
 # ------------------------------------------------------------
 
@@ -102,12 +96,32 @@ MESA_D3D12_DEFAULT_ADAPTER_NAME=GeForce GALLIUM_DRIVER=d3d12 gz sim -r /home/do/
 #   gz topic -t "/world/default/wind" -m gz.msgs.Wind -p "linear_velocity: {x: 0.0, y: 0.0, z: 0.0}"
 
 
+# ============================================================
+# HƯỚNG DẪN ĐIỀU KHIỂN TAY CẦM XBOX 360 & CAMERA CHASE VIEW:
+# ============================================================
+# [Nút Y]       : Cất cánh tự động (ARM & Takeoff lên 2.0m)
+# [Nút A]       : Hạ cánh an toàn (Safe Land & Disarm khi chạm đất)
+# [Nút BACK]    : Phanh khẩn cấp & Tắt động cơ (Emergency Disarm)
+#
+# [Nút X]       : Xoay đầu Drone sang Trái (Yaw CCW) - Camera tự động xoay đuổi theo!
+# [Nút B]       : Xoay đầu Drone sang Phải (Yaw CW)  - Camera tự động xoay đuổi theo!
+#
+# [Nút LB]      : THU GẦN CAMERA (Zoom In - khoảng cách gần lại, Drone to ra)
+# [Nút RB]      : PHÓNG XA CAMERA (Zoom Out - khoảng cách lùi xa, Drone nhỏ đi)
+#
+# [Cần gạt Trái]: Lên/Xuống (Độ cao Altitude)
+# [Cần gạt Phải]: Lên/Xuống (Tiến/Lùi), Trái/Phải (Dạt ngang Roll)
+# ============================================================
+
 Bước 1: Mở PowerShell trên Windows
 Mở Windows PowerShell (hoặc Terminal Windows) và gõ lệnh:
         usbipd list
         usbipd attach --wsl --busid 1-1
 
-Bước 2: Linux 
- 
-        ~/drone_control_cpp/build/06_hitl_esp32_bridge /dev/ttyUSB1
+Bước 2: Khởi động Gazebo (Terminal 1)
+        ~/drone_control_cpp/run_gazebo.sh
+
+Bước 3: Khởi động HITL Gateway ESP32 (Terminal 2)
+        ~/drone_control_cpp/run_hitl_xbox.sh /dev/ttyUSB1
+
 

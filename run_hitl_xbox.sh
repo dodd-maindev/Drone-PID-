@@ -3,12 +3,30 @@
 # Script khởi chạy HITL Gateway với Tay cầm Xbox 360 & Gazebo Sim
 # ==============================================================================
 
-PORT=${1:-/dev/ttyUSB0}
+# Tự động phát hiện cổng Serial ESP32 đang cắm
+PORT=$1
+if [ -n "$PORT" ] && [ ! -e "$PORT" ]; then
+    echo "⚠️ Cổng '$PORT' không tồn tại, đang tự động quét tìm cổng ESP32..."
+    PORT=""
+fi
+
+if [ -z "$PORT" ]; then
+    for candidate in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0 /dev/ttyACM1; do
+        if [ -e "$candidate" ]; then
+            PORT="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -z "$PORT" ]; then
+    PORT="/dev/ttyUSB0"
+fi
 
 echo "============================================================"
 echo " 🎮 KHỞI CHẠY HITL GATEWAY - ĐIỀU KHIỂN TAY CẦM XBOX 360"
 echo "============================================================"
-echo " Cổng Serial ESP32: $PORT"
+echo " Cổng Serial ESP32 phát hiện: $PORT"
 echo ""
 
 # Kiểm tra quyền truy cập cổng Serial

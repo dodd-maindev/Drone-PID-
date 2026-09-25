@@ -1,64 +1,93 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <sdf version="1.9">
   <world name="default">
+    <!-- CẤU HÌNH VẬT LÝ ODE SIÊU MƯỢT (250Hz, quick solver 25 iters) -->
     <physics type="ode">
       <max_step_size>0.004</max_step_size>
       <real_time_factor>1.0</real_time_factor>
       <real_time_update_rate>250</real_time_update_rate>
+      <ode>
+        <solver>
+          <type>quick</type>
+          <iters>25</iters>
+          <sor>1.3</sor>
+        </solver>
+        <constraints>
+          <cfm>0.00001</cfm>
+          <erp>0.2</erp>
+          <contact_max_correcting_vel>100.0</contact_max_correcting_vel>
+          <contact_surface_layer>0.001</contact_surface_layer>
+        </constraints>
+      </ode>
     </physics>
     <gravity>0 0 -9.8</gravity>
     <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
     <atmosphere type="adiabatic"/>
-    <plugin
-      filename="gz-sim-physics-system"
-      name="gz::sim::systems::Physics">
-    </plugin>
-    <plugin
-      filename="gz-sim-scene-broadcaster-system"
-      name="gz::sim::systems::SceneBroadcaster">
-    </plugin>
-    <plugin
-      filename="gz-sim-user-commands-system"
-      name="gz::sim::systems::UserCommands">
-    </plugin>
-    <plugin
-      filename="gz-sim-sensors-system"
-      name="gz::sim::systems::Sensors">
+
+    <!-- Hệ thống Physics và Sensors của Gazebo Harmonic -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
       <render_engine>ogre2</render_engine>
     </plugin>
 
-    <!-- BẬT LẠI GIÓ VÀ PLUGIN HIỆU ỨNG GIÓ ĐỘNG -->
+    <!-- PLUGIN HIỆU ỨNG GIÓ ĐỘNG THỰC TẾ -->
     <wind>
-      <linear_velocity>2.0 1.0 0</linear_velocity>
+      <linear_velocity>1.5 0.5 0</linear_velocity>
     </wind>
 
-    <plugin
-      filename="gz-sim-wind-effects-system"
-      name="gz::sim::systems::WindEffects">
+    <plugin filename="gz-sim-wind-effects-system" name="gz::sim::systems::WindEffects">
       <force_approximation_scaling_factor>0.005</force_approximation_scaling_factor>
       <horizontal>
         <magnitude>
           <time_for_rise>4.0</time_for_rise>
           <sin>
-            <amplitude_percent>0.40</amplitude_percent>
+            <amplitude_percent>0.30</amplitude_percent>
             <period>6.0</period>
           </sin>
         </magnitude>
         <direction>
           <time_for_rise>8.0</time_for_rise>
           <sin>
-            <amplitude>0.4</amplitude>
+            <amplitude>0.3</amplitude>
             <period>10.0</period>
           </sin>
         </direction>
       </horizontal>
     </plugin>
+
+    <!-- Camera mặc định khi mở Gazebo (dùng default GUI config đã có sẵn CameraTracking) -->
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>-3.5 0 2.5 0 0.35 0</pose>
+      </camera>
+    </gui>
+
+    <!-- Bầu trời trong xanh & Ánh sáng mặt trời -->
     <scene>
       <grid>false</grid>
-      <ambient>0.4 0.4 0.4 1</ambient>
-      <background>0.7 0.7 0.7 1</background>
+      <ambient>0.58 0.58 0.62 1</ambient>
+      <background>0.62 0.78 0.95 1</background>
       <shadows>true</shadows>
     </scene>
+
+    <light name="sunUTC" type="directional">
+      <pose>0 0 500 0 -0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1.25</intensity>
+      <direction>0.3 0.4 -0.85</direction>
+      <diffuse>0.98 0.96 0.90 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+      <attenuation>
+        <range>2000</range>
+        <linear>0</linear>
+        <constant>1</constant>
+        <quadratic>0</quadratic>
+      </attenuation>
+    </light>
+
+    <!-- THẾ GIỚI RỘNG LỚN: MẶT ĐẤT SÂN CỎ 600m x 600m -->
     <model name="ground_plane">
       <static>true</static>
       <link name="link">
@@ -66,77 +95,281 @@
           <geometry>
             <plane>
               <normal>0 0 1</normal>
-              <size>1 1</size>
+              <size>600 600</size>
             </plane>
           </geometry>
           <surface>
-            <friction>
-              <ode/>
-            </friction>
-            <bounce/>
-            <contact/>
+            <friction><ode/></friction>
           </surface>
         </collision>
         <visual name="visual">
           <geometry>
             <plane>
               <normal>0 0 1</normal>
-              <size>500 500</size>
+              <size>600 600</size>
             </plane>
           </geometry>
           <material>
-            <ambient>0.8 0.8 0.8 1</ambient>
-            <diffuse>0.8 0.8 0.8 1</diffuse>
-            <specular>0.8 0.8 0.8 1</specular>
+            <ambient>0.28 0.46 0.22 1</ambient>
+            <diffuse>0.32 0.54 0.25 1</diffuse>
+            <specular>0.04 0.04 0.04 1</specular>
           </material>
         </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <inertial>
-          <pose>0 0 0 0 -0 0</pose>
-          <mass>1</mass>
-          <inertia>
-            <ixx>1</ixx>
-            <ixy>0</ixy>
-            <ixz>0</ixz>
-            <iyy>1</iyy>
-            <iyz>0</iyz>
-            <izz>1</izz>
-          </inertia>
-        </inertial>
-        <enable_wind>false</enable_wind>
       </link>
-      <pose>0 0 0 0 -0 0</pose>
-      <self_collide>false</self_collide>
+      <pose>0 0 0 0 0 0</pose>
     </model>
-    <light name="sunUTC" type="directional">
-      <pose>0 0 500 0 -0 0</pose>
-      <cast_shadows>true</cast_shadows>
-      <intensity>1</intensity>
-      <direction>0.001 0.625 -0.78</direction>
-      <diffuse>0.904 0.904 0.904 1</diffuse>
-      <specular>0.271 0.271 0.271 1</specular>
-      <attenuation>
-        <range>2000</range>
-        <linear>0</linear>
-        <constant>1</constant>
-        <quadratic>0</quadratic>
-      </attenuation>
-      <spot>
-        <inner_angle>0</inner_angle>
-        <outer_angle>0</outer_angle>
-        <falloff>0</falloff>
-      </spot>
-    </light>
+
+    <!-- ĐƯỜNG GIAO THÔNG DÀI 200M (Asphalt Highway) -->
+    <model name="asphalt_road">
+      <static>true</static>
+      <link name="link">
+        <!-- Đường chính chạy dọc trục Y -->
+        <visual name="main_road">
+          <pose>18.0 0 0.003 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>8.0 200.0 0.005</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.18 0.20 1</ambient>
+            <diffuse>0.22 0.22 0.24 1</diffuse>
+          </material>
+        </visual>
+        <!-- Vạch sơn vàng tim đường -->
+        <visual name="road_stripes">
+          <pose>18.0 0 0.006 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 190.0 0.005</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.92 0.78 0.1 1</ambient>
+            <diffuse>0.92 0.78 0.1 1</diffuse>
+          </material>
+        </visual>
+        <!-- Đường nhánh bê tông dẫn vào bãi đáp drone chính -->
+        <visual name="driveway_to_helipad">
+          <pose>9.0 0 0.003 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>10.0 3.0 0.005</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.55 0.58 1</ambient>
+            <diffuse>0.60 0.60 0.63 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ============================================================ -->
+    <!-- HỆ THỐNG SÂN ĐÁP DRONE HELIPAD (CHÍNH & VỆ TINH ĐỂ TẬP LUYỆN) -->
+    <!-- ============================================================ -->
+
+    <!-- BÃI ĐÁP CHÍNH (ALPHA HELIPAD) - TỌA ĐỘ GỐC (0, 0, 0) -->
+    <include>
+      <name>helipad_alpha</name>
+      <uri>model://landing_pad</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- BÃI ĐÁP PHỤ 1 (BRAVO HELIPAD) - Cách 42m hướng Đông-Bắc -->
+    <include>
+      <name>helipad_bravo</name>
+      <uri>model://landing_pad</uri>
+      <pose>30.0 30.0 0 0 0 0</pose>
+    </include>
+
+    <!-- BÃI ĐÁP PHỤ 2 (CHARLIE HELIPAD) - Cách 40m hướng Tây-Bắc -->
+    <include>
+      <name>helipad_charlie</name>
+      <uri>model://landing_pad</uri>
+      <pose>-25.0 30.0 0 0 0 0</pose>
+    </include>
+
+    <!-- BÃI ĐÁP PHỤ 3 (DELTA HELIPAD) - Cách 40m hướng Nam -->
+    <include>
+      <name>helipad_delta</name>
+      <uri>model://landing_pad</uri>
+      <pose>0.0 -40.0 0 0 0 0</pose>
+    </include>
+
+    <!-- ============================================================ -->
+    <!-- KHU PHỐ DÂN CƯ NGOẠI Ô (SUBURBAN HOUSES) -->
+    <!-- ============================================================ -->
+    <include>
+      <name>suburban_villa_1</name>
+      <uri>model://house_1</uri>
+      <pose>-35.0 20.0 0 0 0 0</pose>
+    </include>
+    <include>
+      <name>suburban_villa_2</name>
+      <uri>model://house_2</uri>
+      <pose>-35.0 -20.0 0 0 0 0</pose>
+    </include>
+    <include>
+      <name>suburban_villa_3</name>
+      <uri>model://house_1</uri>
+      <pose>-52.0 0.0 0 0 0 1.5708</pose>
+    </include>
+    <include>
+      <name>suburban_villa_4</name>
+      <uri>model://house_2</uri>
+      <pose>-52.0 35.0 0 0 0 0.8</pose>
+    </include>
+    <include>
+      <name>suburban_villa_5</name>
+      <uri>model://house_1</uri>
+      <pose>-52.0 -35.0 0 0 0 -0.5</pose>
+    </include>
+    <include>
+      <name>warehouse_east</name>
+      <uri>model://warehouse</uri>
+      <pose>40.0 35.0 0 0 0 1.5708</pose>
+    </include>
+    <include>
+      <name>house_roadside_1</name>
+      <uri>model://house_2</uri>
+      <pose>28.0 25.0 0 0 0 -1.5708</pose>
+    </include>
+    <include>
+      <name>house_roadside_2</name>
+      <uri>model://house_1</uri>
+      <pose>28.0 -25.0 0 0 0 -1.5708</pose>
+    </include>
+
+    <!-- ============================================================ -->
+    <!-- XE HƠI & PHƯƠNG TIỆN GIAO THÔNG (ĐỖ VEN ĐƯỜNG) -->
+    <!-- ============================================================ -->
+    <include>
+      <name>parked_suv</name>
+      <uri>model://suv</uri>
+      <pose>15.5 12.0 0 0 0 1.5708</pose>
+    </include>
+    <include>
+      <name>parked_ambulance</name>
+      <uri>model://ambulance</uri>
+      <pose>15.5 -12.0 0 0 0 1.5708</pose>
+    </include>
+    <include>
+      <name>parked_suv_2</name>
+      <uri>model://suv</uri>
+      <pose>15.5 30.0 0 0 0 1.5708</pose>
+    </include>
+    <include>
+      <name>parked_suv_3</name>
+      <uri>model://suv</uri>
+      <pose>15.5 -30.0 0 0 0 -1.5708</pose>
+    </include>
+    <include>
+      <name>ambulance_far</name>
+      <uri>model://ambulance</uri>
+      <pose>15.5 45.0 0 0 0 1.5708</pose>
+    </include>
+
+    <!-- ============================================================ -->
+    <!-- CÂY CỐI DÀY ĐẶC - RỪNG THÔNG & SỒI TẠO CHƯỚNG NGẠI VẬT    -->
+    <!-- ============================================================ -->
+
+    <!-- Cây sồi tán rộng rải rác quanh khu vực bay -->
+    <include><name>oak_north_1</name><uri>model://oak_tree</uri>
+      <pose>-15.0 32.0 0 0 0 0.4</pose></include>
+    <include><name>oak_south_1</name><uri>model://oak_tree</uri>
+      <pose>-15.0 -32.0 0 0 0 1.1</pose></include>
+    <include><name>oak_east_1</name><uri>model://oak_tree</uri>
+      <pose>26.0 18.0 0 0 0 -0.6</pose></include>
+    <include><name>oak_east_2</name><uri>model://oak_tree</uri>
+      <pose>26.0 -18.0 0 0 0 1.8</pose></include>
+    <include><name>oak_mid_1</name><uri>model://oak_tree</uri>
+      <pose>10.0 40.0 0 0 0 0.9</pose></include>
+    <include><name>oak_mid_2</name><uri>model://oak_tree</uri>
+      <pose>-8.0 -45.0 0 0 0 -0.3</pose></include>
+    <include><name>oak_near_1</name><uri>model://oak_tree</uri>
+      <pose>-20.0 10.0 0 0 0 2.1</pose></include>
+    <include><name>oak_near_2</name><uri>model://oak_tree</uri>
+      <pose>-20.0 -10.0 0 0 0 -1.2</pose></include>
+    <include><name>oak_far_ne</name><uri>model://oak_tree</uri>
+      <pose>45.0 50.0 0 0 0 0.5</pose></include>
+    <include><name>oak_far_sw</name><uri>model://oak_tree</uri>
+      <pose>-55.0 -50.0 0 0 0 1.4</pose></include>
+
+    <!-- Hàng thông cao - phía Tây (ranh giới khu dân cư) -->
+    <include><name>pine_w1</name><uri>model://pine_tree</uri>
+      <pose>-45.0 38.0 0 0 0 0.2</pose></include>
+    <include><name>pine_w2</name><uri>model://pine_tree</uri>
+      <pose>-45.0 18.0 0 0 0 -0.4</pose></include>
+    <include><name>pine_w3</name><uri>model://pine_tree</uri>
+      <pose>-45.0 -2.0 0 0 0 0.7</pose></include>
+    <include><name>pine_w4</name><uri>model://pine_tree</uri>
+      <pose>-45.0 -22.0 0 0 0 1.5</pose></include>
+    <include><name>pine_w5</name><uri>model://pine_tree</uri>
+      <pose>-45.0 -42.0 0 0 0 -0.9</pose></include>
+    <include><name>pine_w6</name><uri>model://pine_tree</uri>
+      <pose>-60.0 30.0 0 0 0 0.1</pose></include>
+    <include><name>pine_w7</name><uri>model://pine_tree</uri>
+      <pose>-60.0 0.0 0 0 0 -1.3</pose></include>
+    <include><name>pine_w8</name><uri>model://pine_tree</uri>
+      <pose>-60.0 -30.0 0 0 0 2.0</pose></include>
+
+    <!-- Hàng thông - phía Đông (bên kia đường) -->
+    <include><name>pine_e1</name><uri>model://pine_tree</uri>
+      <pose>38.0 45.0 0 0 0 0.3</pose></include>
+    <include><name>pine_e2</name><uri>model://pine_tree</uri>
+      <pose>38.0 20.0 0 0 0 -0.8</pose></include>
+    <include><name>pine_e3</name><uri>model://pine_tree</uri>
+      <pose>38.0 -5.0 0 0 0 1.2</pose></include>
+    <include><name>pine_e4</name><uri>model://pine_tree</uri>
+      <pose>38.0 -30.0 0 0 0 -0.5</pose></include>
+    <include><name>pine_e5</name><uri>model://pine_tree</uri>
+      <pose>38.0 -50.0 0 0 0 0.6</pose></include>
+    <include><name>pine_e6</name><uri>model://pine_tree</uri>
+      <pose>50.0 35.0 0 0 0 -1.1</pose></include>
+    <include><name>pine_e7</name><uri>model://pine_tree</uri>
+      <pose>50.0 10.0 0 0 0 0.8</pose></include>
+    <include><name>pine_e8</name><uri>model://pine_tree</uri>
+      <pose>50.0 -15.0 0 0 0 -0.2</pose></include>
+    <include><name>pine_e9</name><uri>model://pine_tree</uri>
+      <pose>50.0 -40.0 0 0 0 1.7</pose></include>
+
+    <!-- Cụm cây phía Bắc & Nam (tạo hành lang bay) -->
+    <include><name>pine_n1</name><uri>model://pine_tree</uri>
+      <pose>-10.0 55.0 0 0 0 0.4</pose></include>
+    <include><name>pine_n2</name><uri>model://pine_tree</uri>
+      <pose>10.0 55.0 0 0 0 -0.7</pose></include>
+    <include><name>pine_n3</name><uri>model://pine_tree</uri>
+      <pose>25.0 55.0 0 0 0 1.1</pose></include>
+    <include><name>pine_s1</name><uri>model://pine_tree</uri>
+      <pose>-10.0 -55.0 0 0 0 -0.3</pose></include>
+    <include><name>pine_s2</name><uri>model://pine_tree</uri>
+      <pose>10.0 -55.0 0 0 0 0.9</pose></include>
+    <include><name>pine_s3</name><uri>model://pine_tree</uri>
+      <pose>25.0 -55.0 0 0 0 -1.4</pose></include>
+
+    <!-- Cây gần khu vực bay (chướng ngại thực sự) -->
+    <include><name>pine_obs_1</name><uri>model://pine_tree</uri>
+      <pose>8.0 15.0 0 0 0 0.5</pose></include>
+    <include><name>pine_obs_2</name><uri>model://pine_tree</uri>
+      <pose>-12.0 -18.0 0 0 0 -0.6</pose></include>
+    <include><name>oak_obs_1</name><uri>model://oak_tree</uri>
+      <pose>15.0 -8.0 0 0 0 1.3</pose></include>
+
+    <!-- TỌA ĐỘ ĐỊA LÝ GPS CHUẨN (Zurich / Open Field) -->
     <spherical_coordinates>
       <surface_model>EARTH_WGS84</surface_model>
       <world_frame_orientation>ENU</world_frame_orientation>
       <latitude_deg>47.397971057728974</latitude_deg>
-      <longitude_deg> 8.546163739800146</longitude_deg>
+      <longitude_deg>8.546163739800146</longitude_deg>
       <elevation>0</elevation>
     </spherical_coordinates>
+
+    <!-- DRONE QUADCOPTER X500 (NẰM TRANG TRỌNG NGAY TÂM BÃI ĐÁP HELIPAD ALPHA) -->
     <include>
       <uri>model://x500</uri>
-      <pose>0 0 0.1 0 0 0</pose>
+      <pose>0 0 0.12 0 0 0</pose>
     </include>
+
   </world>
 </sdf>
