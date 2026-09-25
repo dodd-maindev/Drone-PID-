@@ -105,5 +105,9 @@ MESA_D3D12_DEFAULT_ADAPTER_NAME=GeForce GALLIUM_DRIVER=d3d12 gz sim -r /home/do/
 Bước 1: Mở PowerShell trên Windows
 Mở Windows PowerShell (hoặc Terminal Windows) và gõ lệnh:
         usbipd list
+        usbipd attach --wsl --busid 1-1
 
+Bước 2: Linux 
+ 
+        ~/drone_control_cpp/build/06_hitl_esp32_bridge /dev/ttyUSB1
 
