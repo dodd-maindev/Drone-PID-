@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <model name="isilab_billboard">
+    <static>true</static>
+    <link name="link">
+      <!-- Cột đỡ trụ bên trái (thép xám) -->
+      <collision name="pillar_left_col">
+        <pose>-3.5 0 2.2 0 0 0</pose>
+        <geometry><cylinder><radius>0.15</radius><length>4.4</length></cylinder></geometry>
+      </collision>
+      <visual name="pillar_left">
+        <pose>-3.5 0 2.2 0 0 0</pose>
+        <geometry><cylinder><radius>0.15</radius><length>4.4</length></cylinder></geometry>
+        <material>
+          <ambient>0.3 0.3 0.35 1</ambient>
+          <diffuse>0.4 0.4 0.45 1</diffuse>
+          <specular>0.5 0.5 0.5 1</specular>
+        </material>
+      </visual>
+
+      <!-- Cột đỡ trụ bên phải -->
+      <collision name="pillar_right_col">
+        <pose>3.5 0 2.2 0 0 0</pose>
+        <geometry><cylinder><radius>0.15</radius><length>4.4</length></cylinder></geometry>
+      </collision>
+      <visual name="pillar_right">
+        <pose>3.5 0 2.2 0 0 0</pose>
+        <geometry><cylinder><radius>0.15</radius><length>4.4</length></cylinder></geometry>
+        <material>
+          <ambient>0.3 0.3 0.35 1</ambient>
+          <diffuse>0.4 0.4 0.45 1</diffuse>
+          <specular>0.5 0.5 0.5 1</specular>
+        </material>
+      </visual>
+
+      <!-- Khung bảng chính (Hộp đỡ phía sau) -->
+      <collision name="board_frame_col">
+        <pose>0 0 4.2 0 0 0</pose>
+        <geometry><box><size>9.6 0.2 3.1</size></box></geometry>
+      </collision>
+      <visual name="board_frame">
+        <pose>0 0 4.2 0 0 0</pose>
+        <geometry><box><size>9.6 0.2 3.1</size></box></geometry>
+        <material>
+          <ambient>0.15 0.15 0.18 1</ambient>
+          <diffuse>0.2 0.2 0.22 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- Mặt trước hiển thị Banner Logo ISILAB (Hướng về -Y) -->
+      <visual name="banner_front">
+        <pose>0 -0.105 4.2 1.5708 0 0</pose>
+        <cast_shadows>false</cast_shadows>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>9.5 3.0</size>
+          </plane>
+        </geometry>
+        <material>
+          <ambient>0.9 0.9 0.9 1</ambient>
+          <diffuse>1.0 1.0 1.0 1</diffuse>
+          <pbr>
+            <metal>
+              <albedo_map>model://isilab_billboard/materials/textures/isilab_banner.png</albedo_map>
+              <roughness>0.3</roughness>
+              <metalness>0.0</metalness>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+
+      <!-- Mặt sau hiển thị Banner Logo ISILAB (Hướng về +Y) -->
+      <visual name="banner_back">
+        <pose>0 0.105 4.2 -1.5708 0 3.14159</pose>
+        <cast_shadows>false</cast_shadows>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>9.5 3.0</size>
+          </plane>
+        </geometry>
+        <material>
+          <ambient>0.9 0.9 0.9 1</ambient>
+          <diffuse>1.0 1.0 1.0 1</diffuse>
+          <pbr>
+            <metal>
+              <albedo_map>model://isilab_billboard/materials/textures/isilab_banner.png</albedo_map>
+              <roughness>0.3</roughness>
+              <metalness>0.0</metalness>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

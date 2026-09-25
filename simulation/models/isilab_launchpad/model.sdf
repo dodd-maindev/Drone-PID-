@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <model name="isilab_launchpad">
+    <static>true</static>
+    <link name="link">
+      <!-- Nền bê tông sẫm màu hình vuông 10m x 10m -->
+      <collision name="collision">
+        <pose>0 0 0.008 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>10.0 10.0 0.016</size>
+          </box>
+        </geometry>
+      </collision>
+
+      <visual name="base_tarmac">
+        <pose>0 0 0.008 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>10.0 10.0 0.016</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.18 0.18 0.20 1</ambient>
+          <diffuse>0.22 0.22 0.25 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+
+      <!-- Vạch viền vàng an toàn xung quanh 10m x 10m -->
+      <visual name="border_north">
+        <pose>0 4.8 0.017 0 0 0</pose>
+        <geometry><box><size>10.0 0.35 0.004</size></box></geometry>
+        <material><ambient>0.95 0.78 0.05 1</ambient><diffuse>0.95 0.78 0.05 1</diffuse></material>
+      </visual>
+      <visual name="border_south">
+        <pose>0 -4.8 0.017 0 0 0</pose>
+        <geometry><box><size>10.0 0.35 0.004</size></box></geometry>
+        <material><ambient>0.95 0.78 0.05 1</ambient><diffuse>0.95 0.78 0.05 1</diffuse></material>
+      </visual>
+      <visual name="border_east">
+        <pose>4.8 0 0.017 0 0 0</pose>
+        <geometry><box><size>0.35 9.3 0.004</size></box></geometry>
+        <material><ambient>0.95 0.78 0.05 1</ambient><diffuse>0.95 0.78 0.05 1</diffuse></material>
+      </visual>
+      <visual name="border_west">
+        <pose>-4.8 0 0.017 0 0 0</pose>
+        <geometry><box><size>0.35 9.3 0.004</size></box></geometry>
+        <material><ambient>0.95 0.78 0.05 1</ambient><diffuse>0.95 0.78 0.05 1</diffuse></material>
+      </visual>
+
+      <!-- Bề mặt sơn Logo ISILAB lớn 8m x 8m bao quanh khu vực xuất phát -->
+      <visual name="isilab_painted_logo">
+        <pose>0 0 0.020 0 0 0</pose>
+        <cast_shadows>false</cast_shadows>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>8.0 8.0</size>
+          </plane>
+        </geometry>
+        <material>
+          <ambient>0.9 0.9 0.9 1</ambient>
+          <diffuse>1.0 1.0 1.0 1</diffuse>
+          <pbr>
+            <metal>
+              <albedo_map>model://isilab_launchpad/materials/textures/isilab_square.png</albedo_map>
+              <roughness>0.4</roughness>
+              <metalness>0.0</metalness>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

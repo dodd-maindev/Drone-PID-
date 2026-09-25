@@ -166,35 +166,53 @@
     </model>
 
     <!-- ============================================================ -->
-    <!-- HỆ THỐNG SÂN ĐÁP DRONE HELIPAD (CHÍNH & VỆ TINH ĐỂ TẬP LUYỆN) -->
+    <!-- HỆ THỐNG SÂN ĐÁP ISILAB & LOGO SƠN TRÊN BỀ MẶT               -->
     <!-- ============================================================ -->
 
-    <!-- BÃI ĐÁP CHÍNH (ALPHA HELIPAD) - TỌA ĐỘ GỐC (0, 0, 0) -->
+    <!-- BÃI ĐÁP XUẤT PHÁT CHÍNH - TỌA ĐỘ GỐC (0, 0, 0) -->
+    <!-- Logo ISILAB vuông lớn 8m x 8m sơn phẳng bao quanh drone cất cánh -->
     <include>
-      <name>helipad_alpha</name>
-      <uri>model://landing_pad</uri>
+      <name>isilab_central_launchpad</name>
+      <uri>model://isilab_launchpad</uri>
       <pose>0 0 0 0 0 0</pose>
     </include>
 
-    <!-- BÃI ĐÁP PHỤ 1 (BRAVO HELIPAD) - Cách 42m hướng Đông-Bắc -->
+    <!-- BÃI ĐÁP VỆ TINH 1 (BRAVO) - Đông-Bắc 42m -->
     <include>
       <name>helipad_bravo</name>
-      <uri>model://landing_pad</uri>
+      <uri>model://isilab_launchpad</uri>
       <pose>30.0 30.0 0 0 0 0</pose>
     </include>
 
-    <!-- BÃI ĐÁP PHỤ 2 (CHARLIE HELIPAD) - Cách 40m hướng Tây-Bắc -->
+    <!-- BÃI ĐÁP VỆ TINH 2 (CHARLIE) - Tây-Bắc 40m -->
     <include>
       <name>helipad_charlie</name>
-      <uri>model://landing_pad</uri>
+      <uri>model://isilab_launchpad</uri>
       <pose>-25.0 30.0 0 0 0 0</pose>
     </include>
 
-    <!-- BÃI ĐÁP PHỤ 3 (DELTA HELIPAD) - Cách 40m hướng Nam -->
+    <!-- BÃI ĐÁP VỆ TINH 3 (DELTA) - Nam 40m -->
     <include>
       <name>helipad_delta</name>
-      <uri>model://landing_pad</uri>
+      <uri>model://isilab_launchpad</uri>
       <pose>0.0 -40.0 0 0 0 0</pose>
+    </include>
+
+    <!-- ============================================================ -->
+    <!-- BẢNG HIỆU & BANNER LOGO ISILAB NGOẠI CẢNH                    -->
+    <!-- ============================================================ -->
+    <!-- Biển hiệu Billboard lớn đặt ở lối vào sân bay gần đường chính -->
+    <include>
+      <name>isilab_main_billboard</name>
+      <uri>model://isilab_billboard</uri>
+      <pose>14.0 -10.0 0 0 0 -0.45</pose>
+    </include>
+
+    <!-- Biển hiệu Billboard đặt cạnh trung tâm bay / nhà kho -->
+    <include>
+      <name>isilab_flight_center_billboard</name>
+      <uri>model://isilab_billboard</uri>
+      <pose>30.0 20.0 0 0 0 1.5708</pose>
     </include>
 
     <!-- ============================================================ -->

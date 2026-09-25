@@ -1,20 +1,42 @@
-# Build artifacts
+# Build artifacts and directories
 build/
+build*/
+cmake-build-*/
 bin/
+out/
+dist/
 *.o
+*.obj
 *.a
+*.lib
 *.so
 *.dylib
+*.dll
+compile_commands.json
 
-# Temporary and log files
+# Packaging and distributable releases
+DroneHITL/
+*.tar.gz
+*.zip
+*.7z
+
+# Logs and runtime telemetry
+log/
+logs/
 *.log
+*.csv
+
+# Temporary and cache files
 /tmp/
 .cache/
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
 
 # IDE and editor settings
 .vscode/
 .idea/
-*.swp
-*~
-
-
+*.sublime-project
+*.sublime-workspace
