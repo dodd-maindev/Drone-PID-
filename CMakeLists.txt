@@ -15,16 +15,20 @@ add_library(drone_lib STATIC
     src/controllers/altitude_controller.cpp
     src/core/vehicle_commander.cpp
     src/utils/data_logger.cpp
+    src/sound/drone_sound.cpp
 )
 
 target_include_directories(drone_lib PUBLIC 
     include 
+    third_party
     third_party/mavlink
 )
 target_link_libraries(drone_lib PUBLIC
     gz-transport13::gz-transport13
     gz-msgs10::gz-msgs10
     pthread
+    dl
+    m
 )
 target_compile_options(drone_lib PUBLIC -Wno-address-of-packed-member)
 

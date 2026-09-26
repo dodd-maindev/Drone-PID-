@@ -35,6 +35,7 @@
 
 #include "comm/telemetry_packet.hpp"
 #include "math/math_utils.hpp"
+#include "sound/drone_sound.hpp"
 
 // Cấu trúc gói tin UDP truyền từ Tay cầm Xbox 360
 #pragma pack(push, 1)
@@ -330,24 +331,33 @@ int main(int argc, char** argv) {
     }
     std::cout << "[✓] Đã nhận tín hiệu Odometry 100Hz từ Gazebo Sim!" << std::endl;
 
-    // Camera tự động Follow drone x500 khi khởi động
-    {
-        auto cam_pub = gz_node.Advertise<gz::msgs::CameraTrack>("/gui/track");
+    // Camera tự động Follow drone x500 khi khởi động và trong suốt quá trình bay
+    auto cam_pub = gz_node.Advertise<gz::msgs::CameraTrack>("/gui/track");
+    auto send_camera_follow = [&cam_pub]() {
         gz::msgs::CameraTrack msg;
         msg.set_track_mode(gz::msgs::CameraTrack::FOLLOW);
         msg.mutable_follow_target()->set_name("x500");
-        msg.set_follow_pgain(0.03);
+        msg.mutable_follow_target()->set_type(gz::msgs::Entity::MODEL);
+        msg.set_follow_pgain(0.08);
         auto* fo = msg.mutable_follow_offset();
-        fo->set_x(-5.0);
+        fo->set_x(-3.5);
         fo->set_y(0.0);
-        fo->set_z(2.5);
-        // Publish 3 lần cách 300ms để đảm bảo Gazebo GUI nhận được
-        for (int i = 0; i < 3; i++) {
-            cam_pub.Publish(msg);
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        fo->set_z(1.8);
+        cam_pub.Publish(msg);
+    };
+
+    // Luồng nền tự động gửi lệnh Follow camera định kỳ 20s đầu để đảm bảo Gazebo GUI bắt được sau khi khởi động
+    std::thread([send_camera_follow]() {
+        for (int i = 0; i < 20; ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            send_camera_follow();
         }
-        std::cout << "[✓] Camera tự động Follow drone x500!" << std::endl;
-    }
+    }).detach();
+    std::cout << "[✓] Đã kích hoạt Camera tự động Follow drone x500!" << std::endl;
+
+    // Khởi tạo hệ thống âm thanh động cơ (start.mp3 và continue.mp3)
+    DroneSoundManager sound_mgr;
+    sound_mgr.init();
 
     set_nonblocking_terminal(true);
 
@@ -427,6 +437,7 @@ int main(int argc, char** argv) {
                 is_armed = true;
                 req_takeoff = true;
                 req_land = false;
+                send_camera_follow();
                 std::cout << "\n[🚀 TAKEOFF] Nút Y Xbox 360 -> ARM & CẤT CÁNH LÊN 2.0M!" << std::endl;
             }
 
@@ -445,7 +456,11 @@ int main(int argc, char** argv) {
                 std::cout << "\n[⚠️ EMERGENCY] Nút BACK Xbox 360 -> Phanh khẩn cấp / DISARM!" << std::endl;
             }
 
-            // LB/RB: Không dùng (dùng cuộn chuột Gazebo để zoom)
+            // Phím LB: Khóa lại góc nhìn camera tự động bám theo Drone (Follow Mode)
+            if ((btns & XBOX_BTN_LB) && !(last_xbox_buttons & XBOX_BTN_LB)) {
+                send_camera_follow();
+                std::cout << "\n[📷 CAMERA] Nút LB Xbox 360 -> Tự động khóa góc nhìn bám theo drone!" << std::endl;
+            }
 
 
             // Phím X: Xoay quanh trục sang trái (Yaw Left CCW)
@@ -514,12 +529,17 @@ int main(int argc, char** argv) {
                     is_armed = true;
                     req_takeoff = true;
                     req_land = false;
+                    send_camera_follow();
                     std::cout << "\n[🚀 TAKEOFF] Đã nhận phím Q -> ARM ĐỘNG CƠ & CẤT CÁNH LÊN 2.0M!" << std::endl;
                     break;
                 case 'a': case 'A':
                     req_land = true;
                     req_takeoff = false;
                     std::cout << "\n[🛑 LAND] Đã nhận phím A -> HẠ CÁNH AN TOÀN!" << std::endl;
+                    break;
+                case 'f': case 'F':
+                    send_camera_follow();
+                    std::cout << "\n[📷 CAMERA] Đã nhận phím F -> Tự động khóa góc nhìn bám theo drone!" << std::endl;
                     break;
                 case 'w': case 'W':
                     alt_vel_cmd = 0.85f;
@@ -696,6 +716,16 @@ int main(int argc, char** argv) {
                 rx_buffer.erase(rx_buffer.begin());
             }
         }
+
+        // Tự động ngắt động cơ và hoàn tất hạ cánh khi drone đã tiếp đất an toàn
+        if (req_land && g_pos_z <= 0.12f && last_motor_w0 < 100.0f) {
+            req_land = false;
+            is_armed = false;
+            std::cout << "\n[✓ TIẾP ĐẤT] Máy bay đã hạ cánh an toàn -> Disarm & Ngắt động cơ." << std::endl;
+        }
+
+        // Cập nhật âm thanh động cơ (cất cánh phát start.mp3, bay lặp continue.mp3, hạ cánh giảm dần rồi tắt)
+        sound_mgr.update(is_armed, req_land, g_pos_z, last_motor_w0);
 
         // 5. In thông tin HUD giám sát (30Hz)
         if (std::chrono::duration<double>(now - last_hud_time).count() >= 0.033) {

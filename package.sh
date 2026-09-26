@@ -69,6 +69,13 @@ if [ -f "$SRC_DIR/XboxBridge.exe" ]; then
     echo -e "${GREEN}  ✓ Xbox Bridge: bin/XboxBridge.exe${NC}"
 fi
 
+# Âm thanh động cơ drone (start.mp3, continue.mp3)
+if [ -d "$SRC_DIR/simulation/audio" ]; then
+    mkdir -p "$PKG_DIR/simulation/audio"
+    cp "$SRC_DIR/simulation/audio"/*.mp3 "$PKG_DIR/simulation/audio/" 2>/dev/null || true
+    echo -e "${GREEN}  ✓ Audio: simulation/audio/ (start.mp3, continue.mp3)${NC}"
+fi
+
 # === 4. Tạo launcher script ===
 echo -e "\n${BOLD}[4/4] Tạo launcher...${NC}"
 
@@ -200,10 +207,9 @@ echo -e "${GREEN}[✓] Gazebo đã sẵn sàng!${NC}"
 
 # Tự động kích hoạt Camera bám theo Drone (góc nhìn thứ 3 - Follow Mode)
 (
-    sleep 2
-    for i in 1 2 3; do
-        gz topic -t /gui/track -m gz.msgs.CameraTrack -p 'track_mode: 2, follow_target: {name: "x500"}, follow_offset: {x: -3.0, y: 0.0, z: 1.8}, follow_pgain: 0.05' &>/dev/null || true
+    for i in $(seq 1 20); do
         sleep 1
+        gz topic -t /gui/track -m gz.msgs.CameraTrack -p 'track_mode: 2, follow_target: {name: "x500", type: 2}, follow_offset: {x: -3.5, y: 0.0, z: 1.8}, follow_pgain: 0.08' &>/dev/null || true
     done
 ) &
 
@@ -212,7 +218,7 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BOLD}  🎮 ĐIỀU KHIỂN XBOX 360:${NC}"
 echo -e "    Y = Cất cánh  │  A = Hạ cánh  │  BACK = Phanh khẩn"
 echo -e "    Stick trái ↕ = Độ cao  │  Stick phải = Di chuyển"
-echo -e "    X = Xoay trái  │  B = Xoay phải"
+echo -e "    X = Xoay trái  │  B = Xoay phải  │  LB / Phím F = Khóa Camera"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}  Ctrl+C để tắt tất cả${NC}"
 echo ""

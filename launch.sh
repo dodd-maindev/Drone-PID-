@@ -198,10 +198,9 @@ done
 
 # Tự động kích hoạt Camera bám theo Drone (góc nhìn thứ 3 - Follow Mode)
 (
-    sleep 2
-    for i in 1 2 3; do
-        gz topic -t /gui/track -m gz.msgs.CameraTrack -p 'track_mode: 2, follow_target: {name: "x500"}, follow_offset: {x: -3.0, y: 0.0, z: 1.8}, follow_pgain: 0.05' &>/dev/null || true
+    for i in $(seq 1 20); do
         sleep 1
+        gz topic -t /gui/track -m gz.msgs.CameraTrack -p 'track_mode: 2, follow_target: {name: "x500", type: 2}, follow_offset: {x: -3.5, y: 0.0, z: 1.8}, follow_pgain: 0.08' &>/dev/null || true
     done
 ) &
 
@@ -211,7 +210,7 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BOLD}  🎮 ĐIỀU KHIỂN:${NC}"
 echo -e "    Y = Cất cánh  │  A = Hạ cánh  │  BACK = Phanh khẩn"
 echo -e "    Stick trái ↕ = Độ cao  │  Stick phải = Di chuyển"
-echo -e "    X = Xoay trái  │  B = Xoay phải"
+echo -e "    X = Xoay trái  │  B = Xoay phải  │  LB / Phím F = Khóa Camera"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}  Nhấn Ctrl+C để tắt tất cả${NC}"
 echo ""
