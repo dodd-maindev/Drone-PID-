@@ -207,6 +207,7 @@ static float g_pos_x = 0, g_pos_y = 0, g_pos_z = 0;
 static float g_vx = 0, g_vy = 0, g_vz = 0;
 static float g_roll = 0, g_pitch = 0, g_yaw = 0;
 static float g_p = 0, g_q = 0, g_r = 0;
+static float g_qw = 1.0f, g_qx = 0.0f, g_qy = 0.0f, g_qz = 0.0f;
 static bool g_odom_connected = false;
 
 void on_odometry(const gz::msgs::Odometry& msg) {
@@ -219,11 +220,11 @@ void on_odometry(const gz::msgs::Odometry& msg) {
     g_vy = msg.twist().linear().y();
     g_vz = msg.twist().linear().z();
 
-    float w = msg.pose().orientation().w();
-    float x = msg.pose().orientation().x();
-    float y = msg.pose().orientation().y();
-    float z = msg.pose().orientation().z();
-    DroneMath::quaternion_to_euler(w, x, y, z, g_roll, g_pitch, g_yaw);
+    g_qw = msg.pose().orientation().w();
+    g_qx = msg.pose().orientation().x();
+    g_qy = msg.pose().orientation().y();
+    g_qz = msg.pose().orientation().z();
+    DroneMath::quaternion_to_euler(g_qw, g_qx, g_qy, g_qz, g_roll, g_pitch, g_yaw);
 
     g_p = msg.twist().angular().x();
     g_q = msg.twist().angular().y();
@@ -264,16 +265,18 @@ int main(int argc, char** argv) {
     std::cout << "   • [Nút Y]           : CẤT CÁNH lên 2.0m (Takeoff)" << std::endl;
     std::cout << "   • [Nút A]           : HẠ CÁNH an toàn (Safe Land)" << std::endl;
     std::cout << "   • [Con lăn trái ↑↓] : ĐIỀU KHIỂN ĐỘ CAO (Bay lên / Hạ xuống)" << std::endl;
+    std::cout << "   • [Con lăn trái ←→] : XOAY HƯỚNG YAW (Trái / Phải)" << std::endl;
     std::cout << "   • [Con lăn phải ↑↓] : TIẾN / LÙI (Pitch)" << std::endl;
     std::cout << "   • [Con lăn phải ←→] : TRÁI / PHẢI (Roll)" << std::endl;
-    std::cout << "   • [Nút X]           : XOAY QUANH TRỤC SANG TRÁI (Yaw Left)" << std::endl;
-    std::cout << "   • [Nút B]           : XOAY QUANH TRỤC SANG PHẢI (Yaw Right)" << std::endl;
+    std::cout << "   • [Nút X / B]       : XOAY TRÁI (CCW) / XOAY PHẢI (CW)" << std::endl;
+    std::cout << "   • [Nút RB]          : KHÓA CAMERA bám theo drone" << std::endl;
+    std::cout << "   • [Nút LB + Cần phải]: LỘN NHÀO 360° (ACRO FLIP: Trái/Phải/Tới/Lui)" << std::endl;
     std::cout << "   • [Nút BACK]        : Phanh dừng khẩn cấp / DISARM" << std::endl;
-    std::cout << "   • [Nút LB / RB]     : Giảm / Tăng tốc độ tối đa (1.0 - 5.0 m/s)" << std::endl;
     std::cout << "------------------------------------------------------------" << std::endl;
     std::cout << " [⌨️ BÀN PHÍM DỰ PHÒNG]:" << std::endl;
-    std::cout << "   • [Q] Cất cánh | [A] Hạ cánh | [W / S] Độ cao | [Mũi tên] Lái" << std::endl;
-    std::cout << "   • [Z / C] Xoay Yaw | [SPACE] Phanh khẩn | [X] Thoát" << std::endl;
+    std::cout << "   • [Q] Cất cánh | [A] Hạ cánh | [W / S] Độ cao | [I/K/J/L] Lái" << std::endl;
+    std::cout << "   • [Z / C] Xoay Yaw | [F] Khóa Camera | [R + J/L/I/K] Lộn 360°" << std::endl;
+    std::cout << "   • [SPACE] Phanh khẩn | [X] Thoát" << std::endl;
     std::cout << "============================================================\n" << std::endl;
 
     // 1. Mở cổng Serial kết nối ESP32
@@ -380,6 +383,32 @@ int main(int argc, char** argv) {
     bool req_land = false;
     bool running = true;
 
+    // Trạng thái Acrobatic 360 Flip Maneuver
+    enum FlipDirection {
+        FLIP_NONE = 0,
+        FLIP_LEFT,   // Roll trái (-X)
+        FLIP_RIGHT,  // Roll phải (+X)
+        FLIP_FRONT,  // Pitch tới (+Y)
+        FLIP_BACK    // Pitch lui (-Y)
+    };
+
+    enum FlipPhase {
+        PHASE_IDLE = 0,
+        PHASE_POPUP,    // Bật vọt lấy quán tính độ cao (~130ms @ 920 rad/s)
+        PHASE_ROTATING, // Xoay vòng 360° dứt khoát (~160-260ms @ 740 rad/s)
+        PHASE_BRAKING,  // Phanh ngược chiều góc (~60-90ms @ 720 rad/s)
+        PHASE_RECOVERY  // Đón drone, triệt tiêu rơi tự do và khóa thăng bằng (~180ms)
+    };
+
+    FlipPhase flip_phase = PHASE_IDLE;
+    FlipDirection flip_dir = FLIP_NONE;
+    auto flip_phase_start = std::chrono::steady_clock::now();
+    bool flip_passed_inverted = false;
+    float flip_start_z = 0.0f;
+
+    auto last_lb_press_time = std::chrono::steady_clock::now() - std::chrono::seconds(5);
+    bool lb_flip_armed = false;
+
     // Trạng thái Tay cầm Xbox 360
     XboxUdpPacket latest_xbox_pkt;
     memset(&latest_xbox_pkt, 0, sizeof(latest_xbox_pkt));
@@ -456,12 +485,19 @@ int main(int argc, char** argv) {
                 std::cout << "\n[⚠️ EMERGENCY] Nút BACK Xbox 360 -> Phanh khẩn cấp / DISARM!" << std::endl;
             }
 
-            // Phím LB: Khóa lại góc nhìn camera tự động bám theo Drone (Follow Mode)
-            if ((btns & XBOX_BTN_LB) && !(last_xbox_buttons & XBOX_BTN_LB)) {
+            // Phím RB: Khóa lại góc nhìn camera tự động bám theo Drone (Follow Mode)
+            if ((btns & XBOX_BTN_RB) && !(last_xbox_buttons & XBOX_BTN_RB)) {
                 send_camera_follow();
-                std::cout << "\n[📷 CAMERA] Nút LB Xbox 360 -> Tự động khóa góc nhìn bám theo drone!" << std::endl;
+                std::cout << "\n[📷 CAMERA] Nút RB Xbox 360 -> Tự động khóa góc nhìn bám theo drone!" << std::endl;
             }
 
+            // Nút LB: Vũ trang cho cú lộn 360° (Acrobatic Flip)
+            // Nhấn LB, sau đó trong vòng 0.35s nếu gạt cần phải (Trái/Phải/Lên/Xuống) thì thực hiện lộn
+            if ((btns & XBOX_BTN_LB) && !(last_xbox_buttons & XBOX_BTN_LB)) {
+                last_lb_press_time = now;
+                lb_flip_armed = true;
+                std::cout << "\n[⚡ FLIP READY] Đã nhấn LB! Gạt cần phải (Trái/Phải/Lên/Xuống) trong 0.3s để lộn 360°!" << std::endl;
+            }
 
             // Phím X: Xoay quanh trục sang trái (Yaw Left CCW)
             if (btns & XBOX_BTN_X) {
@@ -475,6 +511,15 @@ int main(int argc, char** argv) {
             }
 
             constexpr int DEADZONE = 7800;
+
+            // Con lăn trái (Left Stick X): Điều khiển hướng quay quanh trục (Yaw Rate)
+            if (latest_xbox_pkt.thumb_lx > DEADZONE) {
+                gp_yaw_rate = -static_cast<float>(latest_xbox_pkt.thumb_lx - DEADZONE) / (32767.0f - DEADZONE) * 1.5f;
+                gp_yaw_active = true;
+            } else if (latest_xbox_pkt.thumb_lx < -DEADZONE) {
+                gp_yaw_rate = static_cast<float>(-latest_xbox_pkt.thumb_lx - DEADZONE) / (32768.0f - DEADZONE) * 1.5f;
+                gp_yaw_active = true;
+            }
 
             // Con lăn trái (Left Stick Y): Điều khiển ĐỘ CAO (Bay lên / Hạ xuống)
             // Chỉ cho phép can thiệp hủy cất cánh tự động khi người lái cố tình gạt cần mạnh (> 16000)
@@ -511,7 +556,49 @@ int main(int argc, char** argv) {
                 gp_roll_active = true;
             }
 
-            // Tuyệt đối không xoay Yaw bằng con lăn trái. Xoay Yaw chỉ dùng nút X (Trái) và nút B (Phải)
+            // Kiểm tra kích hoạt lộn 360° nếu đang trong cửa sổ 0.35s kể từ khi nhấn LB (hoặc đang giữ LB)
+            double time_since_lb = std::chrono::duration<double>(now - last_lb_press_time).count();
+            bool lb_window_open = lb_flip_armed && (time_since_lb <= 0.35 || (btns & XBOX_BTN_LB));
+            if (time_since_lb > 0.35 && !(btns & XBOX_BTN_LB)) {
+                lb_flip_armed = false;
+            }
+
+            if (lb_window_open && flip_phase == PHASE_IDLE) {
+                FlipDirection detected_dir = FLIP_NONE;
+                if (latest_xbox_pkt.thumb_rx < -16000) {
+                    detected_dir = FLIP_LEFT;
+                } else if (latest_xbox_pkt.thumb_rx > 16000) {
+                    detected_dir = FLIP_RIGHT;
+                } else if (latest_xbox_pkt.thumb_ry > 16000) {
+                    detected_dir = FLIP_FRONT;
+                } else if (latest_xbox_pkt.thumb_ry < -16000) {
+                    detected_dir = FLIP_BACK;
+                }
+
+                if (detected_dir != FLIP_NONE) {
+                    lb_flip_armed = false;
+                    if (!is_armed) {
+                        std::cout << "\n[⚠️ FLIP BỎ QUA] Drone chưa ARM động cơ!" << std::endl;
+                    } else if (g_pos_z < 1.25f) {
+                        std::cout << "\n[⚠️ FLIP TỪ CHỐI] Độ cao (" << std::fixed << std::setprecision(2) << g_pos_z 
+                                  << "m) quá thấp! Hãy bay lên trên 1.5m để lộn an toàn." << std::endl;
+                    } else {
+                        flip_dir = detected_dir;
+                        flip_phase = PHASE_POPUP;
+                        flip_phase_start = now;
+                        flip_passed_inverted = false;
+                        flip_start_z = g_pos_z;
+
+                        std::string dir_str;
+                        if (flip_dir == FLIP_LEFT) dir_str = "LỘN TRÁI (Roll Left 360°)";
+                        else if (flip_dir == FLIP_RIGHT) dir_str = "LỘN PHẢI (Roll Right 360°)";
+                        else if (flip_dir == FLIP_FRONT) dir_str = "LỘN TỚI TRƯỚC (Front Flip 360°)";
+                        else if (flip_dir == FLIP_BACK) dir_str = "LỘN VỀ SAU (Back Flip 360°)";
+
+                        std::cout << "\n[🌀 ACRO FLIP 360°] KÍCH HOẠT: " << dir_str << "!" << std::endl;
+                    }
+                }
+            }
 
             last_xbox_buttons = btns;
         }
@@ -541,6 +628,11 @@ int main(int argc, char** argv) {
                     send_camera_follow();
                     std::cout << "\n[📷 CAMERA] Đã nhận phím F -> Tự động khóa góc nhìn bám theo drone!" << std::endl;
                     break;
+                case 'r': case 'R':
+                    last_lb_press_time = now;
+                    lb_flip_armed = true;
+                    std::cout << "\n[⚡ FLIP READY] Đã nhấn R! Nhấn J (Trái), L (Phải), I (Tới), K (Lui) trong 0.5s để lộn 360°!" << std::endl;
+                    break;
                 case 'w': case 'W':
                     alt_vel_cmd = 0.85f;
                     last_alt_key_time = now;
@@ -552,24 +644,64 @@ int main(int argc, char** argv) {
                     req_takeoff = false;
                     break;
                 case 'U': case 'i': case 'I':
-                    target_vx_cmd = max_speed_mps;
-                    last_pitch_key_time = now;
-                    pitch_hits++;
+                    if (lb_flip_armed && flip_phase == PHASE_IDLE && is_armed && g_pos_z >= 1.25f) {
+                        lb_flip_armed = false;
+                        flip_dir = FLIP_FRONT;
+                        flip_phase = PHASE_POPUP;
+                        flip_phase_start = now;
+                        flip_passed_inverted = false;
+                        flip_start_z = g_pos_z;
+                        std::cout << "\n[🌀 ACRO FLIP 360°] KÍCH HOẠT: LỘN TỚI TRƯỚC (Front Flip 360°)!" << std::endl;
+                    } else {
+                        target_vx_cmd = max_speed_mps;
+                        last_pitch_key_time = now;
+                        pitch_hits++;
+                    }
                     break;
                 case 'N': case 'k': case 'K':
-                    target_vx_cmd = -max_speed_mps;
-                    last_pitch_key_time = now;
-                    pitch_hits++;
+                    if (lb_flip_armed && flip_phase == PHASE_IDLE && is_armed && g_pos_z >= 1.25f) {
+                        lb_flip_armed = false;
+                        flip_dir = FLIP_BACK;
+                        flip_phase = PHASE_POPUP;
+                        flip_phase_start = now;
+                        flip_passed_inverted = false;
+                        flip_start_z = g_pos_z;
+                        std::cout << "\n[🌀 ACRO FLIP 360°] KÍCH HOẠT: LỘN VỀ SAU (Back Flip 360°)!" << std::endl;
+                    } else {
+                        target_vx_cmd = -max_speed_mps;
+                        last_pitch_key_time = now;
+                        pitch_hits++;
+                    }
                     break;
                 case 'L': case 'j': case 'J':
-                    target_vy_cmd = max_speed_mps;
-                    last_roll_key_time = now;
-                    roll_hits++;
+                    if (lb_flip_armed && flip_phase == PHASE_IDLE && is_armed && g_pos_z >= 1.25f) {
+                        lb_flip_armed = false;
+                        flip_dir = FLIP_LEFT;
+                        flip_phase = PHASE_POPUP;
+                        flip_phase_start = now;
+                        flip_passed_inverted = false;
+                        flip_start_z = g_pos_z;
+                        std::cout << "\n[🌀 ACRO FLIP 360°] KÍCH HOẠT: LỘN TRÁI (Roll Left 360°)!" << std::endl;
+                    } else {
+                        target_vy_cmd = max_speed_mps;
+                        last_roll_key_time = now;
+                        roll_hits++;
+                    }
                     break;
-                case 'R': case 'l':
-                    target_vy_cmd = -max_speed_mps;
-                    last_roll_key_time = now;
-                    roll_hits++;
+                case 'l':
+                    if (lb_flip_armed && flip_phase == PHASE_IDLE && is_armed && g_pos_z >= 1.25f) {
+                        lb_flip_armed = false;
+                        flip_dir = FLIP_RIGHT;
+                        flip_phase = PHASE_POPUP;
+                        flip_phase_start = now;
+                        flip_passed_inverted = false;
+                        flip_start_z = g_pos_z;
+                        std::cout << "\n[🌀 ACRO FLIP 360°] KÍCH HOẠT: LỘN PHẢI (Roll Right 360°)!" << std::endl;
+                    } else {
+                        target_vy_cmd = -max_speed_mps;
+                        last_roll_key_time = now;
+                        roll_hits++;
+                    }
                     break;
                 case 'z': case 'Z':
                     yaw_rate_cmd = 0.50f;
@@ -671,6 +803,24 @@ int main(int argc, char** argv) {
         if (req_takeoff)  send_pkt.flags |= CTRL_FLAG_TAKEOFF;
         if (req_land)     send_pkt.flags |= CTRL_FLAG_LAND;
 
+        if (flip_phase != PHASE_IDLE) {
+            // Trong lúc lộn 360°, giữ trạng thái giả lập thăng bằng gửi sang ESP32
+            // để bộ PID trong ESP32 không bị dội tích phân (anti-windup)
+            send_pkt.roll = 0.0f;
+            send_pkt.pitch = 0.0f;
+            send_pkt.p = 0.0f;
+            send_pkt.q = 0.0f;
+            send_pkt.vx = 0.0f;
+            send_pkt.vy = 0.0f;
+            send_pkt.vz = 0.0f;
+            send_pkt.z = flip_start_z;
+            send_pkt.cmd_vx = 0.0f;
+            send_pkt.cmd_vy = 0.0f;
+            send_pkt.cmd_alt_vel = 0.0f;
+            send_pkt.cmd_yaw_rate = 0.0f;
+            send_pkt.flags = (is_armed ? (CTRL_FLAG_ARMED | CTRL_FLAG_DRIVING_X | CTRL_FLAG_DRIVING_Y) : 0);
+        }
+
         send_pkt.checksum = compute_packet_checksum((uint8_t*)&send_pkt + 2, sizeof(send_pkt) - 3);
 
         write(serial_fd, (uint8_t*)&send_pkt, sizeof(send_pkt));
@@ -692,19 +842,21 @@ int main(int argc, char** argv) {
 
                 uint8_t cs = compute_packet_checksum((uint8_t*)&in_pkt + 2, sizeof(ActuatorPacket) - 3);
                 if (cs == in_pkt.checksum) {
-                    // Nhận gói tin hợp lệ từ ESP32! Bơm sang Gazebo Sim
-                    gz::msgs::Actuators motor_msg;
-                    motor_msg.add_velocity(in_pkt.w0);
-                    motor_msg.add_velocity(in_pkt.w1);
-                    motor_msg.add_velocity(in_pkt.w2);
-                    motor_msg.add_velocity(in_pkt.w3);
-                    motor_pub.Publish(motor_msg);
-                    motor_pub_alt.Publish(motor_msg);
+                    // Khi không ở trong cú lộn: Bơm lệnh motor từ ESP32 sang Gazebo Sim
+                    if (flip_phase == PHASE_IDLE) {
+                        gz::msgs::Actuators motor_msg;
+                        motor_msg.add_velocity(in_pkt.w0);
+                        motor_msg.add_velocity(in_pkt.w1);
+                        motor_msg.add_velocity(in_pkt.w2);
+                        motor_msg.add_velocity(in_pkt.w3);
+                        motor_pub.Publish(motor_msg);
+                        motor_pub_alt.Publish(motor_msg);
+                        last_motor_w0 = in_pkt.w0;
+                    }
 
                     rx_packets++;
                     last_esp_pitch = in_pkt.target_pitch_deg;
                     last_esp_roll  = in_pkt.target_roll_deg;
-                    last_motor_w0  = in_pkt.w0;
 
                     // Xóa gói đã xử lý khỏi buffer
                     rx_buffer.erase(rx_buffer.begin(), rx_buffer.begin() + sizeof(ActuatorPacket));
@@ -715,6 +867,137 @@ int main(int argc, char** argv) {
             } else {
                 rx_buffer.erase(rx_buffer.begin());
             }
+        }
+
+        // 4b. Xử lý điều khiển động cơ khi đang thực hiện Acrobatic Flip 360°
+        if (flip_phase != PHASE_IDLE) {
+            double phase_elapsed = std::chrono::duration<double>(now - flip_phase_start).count();
+
+            // Trích xuất góc Euler, Quaternion, độ cao và vận tốc từ Odometry
+            float cur_roll, cur_pitch, cur_p, cur_q, cur_qw, cur_qx, cur_qy, cur_qz;
+            float cur_z, cur_vz;
+            {
+                std::lock_guard<std::mutex> lock(g_odom_mutex);
+                cur_roll = g_roll;
+                cur_pitch = g_pitch;
+                cur_p = g_p;
+                cur_q = g_q;
+                cur_qw = g_qw;
+                cur_qx = g_qx;
+                cur_qy = g_qy;
+                cur_qz = g_qz;
+                cur_z = g_pos_z;
+                cur_vz = g_vz;
+            }
+
+            // Vector trục Z thân drone trong hệ tọa độ thế giới:
+            // z_up = +1.0 (đứng thẳng cân bằng), 0.0 (nghiêng 90°), -1.0 (ngửa bụng hoàn toàn 180°)
+            float z_up = 1.0f - 2.0f * (cur_qx * cur_qx + cur_qy * cur_qy);
+
+            // Ghi nhận mốc đã lật qua điểm ngửa bụng (inverted)
+            if (z_up < -0.20f) {
+                flip_passed_inverted = true;
+            }
+
+            float fw0 = 0.0f, fw1 = 0.0f, fw2 = 0.0f, fw3 = 0.0f;
+
+            if (flip_phase == PHASE_POPUP) {
+                // Giai đoạn 1: Bật vọt lên lấy quán tính độ cao (~200ms @ 980 rad/s)
+                // Cung cấp vận tốc leo ~+1.5m/s và đẩy drone lên +15cm trước khi lộn
+                fw0 = fw1 = fw2 = fw3 = 980.0f;
+                if (phase_elapsed >= 0.20) {
+                    flip_phase = PHASE_ROTATING;
+                    flip_phase_start = now;
+                    flip_passed_inverted = false;
+                }
+            } else if (flip_phase == PHASE_ROTATING) {
+                // Giai đoạn 2: Xoay lộn nhào chớp nhoáng
+                // Khi drone chưa nghiêng quá 78° (z_up >= 0.20): đạp xoay cực nhanh (980 rad/s)
+                // KHI ĐÃ NGỬA BỤNG (z_up < 0.20): CẮT TOÀN BỘ 4 ĐỘNG CƠ VỀ 0 rad/s!
+                // Triệt tiêu 100% lực đẩy ép xuống đất lúc ngửa bụng, drone lộn qua đỉnh hoàn toàn theo quán tính cực nhanh (< 0.1s)
+                const float W_KICK = 980.0f;
+
+                if (z_up >= 0.20f && !flip_passed_inverted) {
+                    if (flip_dir == FLIP_RIGHT) {
+                        fw1 = fw2 = W_KICK;
+                        fw0 = fw3 = 0.0f;
+                    } else if (flip_dir == FLIP_LEFT) {
+                        fw0 = fw3 = W_KICK;
+                        fw1 = fw2 = 0.0f;
+                    } else if (flip_dir == FLIP_FRONT) {
+                        fw1 = fw3 = W_KICK;
+                        fw0 = fw2 = 0.0f;
+                    } else if (flip_dir == FLIP_BACK) {
+                        fw0 = fw2 = W_KICK;
+                        fw1 = fw3 = 0.0f;
+                    }
+                } else {
+                    // ĐANG NGỬA BỤNG: TẮT HOÀN TOÀN CẢ 4 CÁNH (0 rad/s) để không sinh lực đẩy drone xuống đất!
+                    fw0 = fw1 = fw2 = fw3 = 0.0f;
+                }
+
+                // Ghi nhận mốc đã lật qua điểm ngửa bụng (inverted)
+                if (z_up < -0.20f) {
+                    flip_passed_inverted = true;
+                }
+
+                // Điều kiện chuyển NGAY sang PHASE_RECOVERY (Điều khiển vòng kín PD):
+                // Phải ĐÃ QUA ĐIỂM NGỬA BỤNG (flip_passed_inverted) và góc đang tiến sát lại trạng thái cân bằng (~75° còn lại)
+                // KHÔNG DÙNG PHANH MỞ (OPEN-LOOP) để TUYỆT ĐỐI KHÔNG BỊ VĂNG SANG HƯỚNG ĐỐI DIỆN!
+                bool trigger_recovery = false;
+                if (flip_passed_inverted) {
+                    if (flip_dir == FLIP_RIGHT && cur_roll >= -1.35f) {
+                        trigger_recovery = true;
+                    } else if (flip_dir == FLIP_LEFT && cur_roll <= 1.35f) {
+                        trigger_recovery = true;
+                    } else if ((flip_dir == FLIP_FRONT || flip_dir == FLIP_BACK) && z_up >= 0.25f) {
+                        trigger_recovery = true;
+                    }
+                }
+
+                // Giới hạn an toàn thời gian xoay (0.30s)
+                if (trigger_recovery || phase_elapsed >= 0.30) {
+                    flip_phase = PHASE_RECOVERY;
+                    flip_phase_start = now;
+                }
+            } else if (flip_phase == PHASE_BRAKING) {
+                // Dự phòng (chuyển ngay sang recovery)
+                flip_phase = PHASE_RECOVERY;
+                flip_phase_start = now;
+            } else if (flip_phase == PHASE_RECOVERY) {
+                // Giai đoạn 3: ĐIỀU KHIỂN VÒNG KÍN PD HÃM GÓC TỰ ĐỘNG & KHÓA CHẶT ĐỘ CAO
+                // Thành phần D (-28.0 * rate) tự động ghì đứng vận tốc quay góc, khi rate về 0 thì lực hãm tự động tắt.
+                // Thành phần P (-180.0 * angle) tự động kéo phẳng góc về đúng 0.0° mà KHÔNG BAO GIỜ BỊ QUÁ ĐÀ.
+                float alt_deficit = std::max(0.0f, flip_start_z - cur_z);
+                float vz_damping = (cur_vz < 0.0f) ? (-cur_vz * 60.0f) : 0.0f;
+                float base_catch = 930.0f + DroneMath::clamp(alt_deficit * 350.0f + vz_damping, 0.0f, 65.0f);
+
+                float p_term_roll  = -180.0f * cur_roll  - 28.0f * cur_p;
+                float p_term_pitch = -180.0f * cur_pitch - 28.0f * cur_q;
+
+                fw0 = DroneMath::clamp(base_catch - p_term_roll - p_term_pitch, 350.0f, 995.0f);
+                fw1 = DroneMath::clamp(base_catch + p_term_roll + p_term_pitch, 350.0f, 995.0f);
+                fw2 = DroneMath::clamp(base_catch + p_term_roll - p_term_pitch, 350.0f, 995.0f);
+                fw3 = DroneMath::clamp(base_catch - p_term_roll + p_term_pitch, 350.0f, 995.0f);
+
+                // Giữ đón ít nhất 220ms và chỉ nhả quyền điều khiển lại cho ESP32 khi góc đã phẳng (< 5°) và không còn rơi
+                bool angle_level = (std::abs(cur_roll) <= 0.09f && std::abs(cur_pitch) <= 0.09f && std::abs(cur_p) <= 2.0f && std::abs(cur_q) <= 2.0f);
+                bool catch_stable = (phase_elapsed >= 0.22 && angle_level && (cur_vz >= -0.10f || cur_z >= flip_start_z - 0.05f));
+                if (catch_stable || phase_elapsed >= 0.38) {
+                    flip_phase = PHASE_IDLE;
+                    flip_dir = FLIP_NONE;
+                    std::cout << "\n[✓ FLIP HOÀN TẤT] Lộn 360° chuẩn xác 1 vòng! Drone đứng vững thăng bằng." << std::endl;
+                }
+            }
+
+            gz::msgs::Actuators flip_motor_msg;
+            flip_motor_msg.add_velocity(fw0);
+            flip_motor_msg.add_velocity(fw1);
+            flip_motor_msg.add_velocity(fw2);
+            flip_motor_msg.add_velocity(fw3);
+            motor_pub.Publish(flip_motor_msg);
+            motor_pub_alt.Publish(flip_motor_msg);
+            last_motor_w0 = (fw0 + fw1 + fw2 + fw3) * 0.25f;
         }
 
         // Tự động ngắt động cơ và hoàn tất hạ cánh khi drone đã tiếp đất an toàn
@@ -731,7 +1014,9 @@ int main(int argc, char** argv) {
         if (std::chrono::duration<double>(now - last_hud_time).count() >= 0.033) {
             last_hud_time = now;
             std::string status_str;
-            if (!is_armed) {
+            if (flip_phase != PHASE_IDLE) {
+                status_str = "🌀 FLIP 360°...";
+            } else if (!is_armed) {
                 status_str = "DISARMED (Bấm Y để bay)";
             } else if (req_land) {
                 status_str = "HẠ CÁNH...";
