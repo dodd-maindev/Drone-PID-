@@ -1000,11 +1000,22 @@ int main(int argc, char** argv) {
             last_motor_w0 = (fw0 + fw1 + fw2 + fw3) * 0.25f;
         }
 
-        // Tự động ngắt động cơ và hoàn tất hạ cánh khi drone đã tiếp đất an toàn
-        if (req_land && g_pos_z <= 0.12f && last_motor_w0 < 100.0f) {
+        // Tự động ngắt động cơ và hoàn tất hạ cánh ngay khi drone vừa tiếp đất an toàn
+        // Chân đáp tiếp xúc mặt sàn ở z <= 0.165m và giảm tốc rơi g_vz >= -0.12m/s, hoặc z <= 0.138m
+        bool is_touchdown = req_land && (g_pos_z <= 0.138f || (g_pos_z <= 0.165f && g_vz >= -0.12f));
+        if (is_touchdown) {
             req_land = false;
             is_armed = false;
-            std::cout << "\n[✓ TIẾP ĐẤT] Máy bay đã hạ cánh an toàn -> Disarm & Ngắt động cơ." << std::endl;
+            last_motor_w0 = 0.0f;
+            gz::msgs::Actuators stop_motor_msg;
+            stop_motor_msg.add_velocity(0.0f);
+            stop_motor_msg.add_velocity(0.0f);
+            stop_motor_msg.add_velocity(0.0f);
+            stop_motor_msg.add_velocity(0.0f);
+            motor_pub.Publish(stop_motor_msg);
+            motor_pub_alt.Publish(stop_motor_msg);
+            sound_mgr.stop();
+            std::cout << "\n[✓ TIẾP ĐẤT] Máy bay đã tiếp đất an toàn -> Disarm & Ngắt động cơ tức thì." << std::endl;
         }
 
         // Cập nhật âm thanh động cơ (cất cánh phát start.mp3, bay lặp continue.mp3, hạ cánh giảm dần rồi tắt)

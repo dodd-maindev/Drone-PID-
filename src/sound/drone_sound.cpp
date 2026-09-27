@@ -3,16 +3,15 @@
 #include "sound/drone_sound.hpp"
 
 #include <iostream>
+#include <iomanip>
 #include <vector>
 #include <unistd.h>
 #include <algorithm>
 
 struct DroneSoundManager::Impl {
     ma_engine engine;
-    ma_sound start_sound;
-    ma_sound continue_sound;
-    bool start_loaded = false;
-    bool continue_loaded = false;
+    ma_sound engine_sound;
+    bool sound_loaded = false;
     bool engine_ready = false;
 };
 
@@ -35,7 +34,7 @@ static std::string resolve_path(const std::string& filename, const std::string& 
 }
 
 DroneSoundManager::DroneSoundManager()
-    : m_impl(new Impl()), m_state(STATE_IDLE), m_initialized(false), m_volume(0.85f) {
+    : m_impl(new Impl()), m_state(STATE_IDLE), m_initialized(false), m_playing(false), m_volume(0.0f), m_land_start_alt(2.0f) {
 }
 
 DroneSoundManager::~DroneSoundManager() {
@@ -53,165 +52,130 @@ bool DroneSoundManager::init(const std::string& audio_dir) {
     }
     m_impl->engine_ready = true;
 
-    std::string start_path = resolve_path("start.mp3", audio_dir);
-    std::string continue_path = resolve_path("continue.mp3", audio_dir);
-
-    res = ma_sound_init_from_file(&m_impl->engine, start_path.c_str(), 0, NULL, NULL, &m_impl->start_sound);
-    if (res == MA_SUCCESS) {
-        ma_sound_set_looping(&m_impl->start_sound, MA_FALSE);
-        m_impl->start_loaded = true;
-        std::cout << "[✓] Nạp âm thanh cất cánh: " << start_path << std::endl;
-    } else {
-        std::cerr << "[!] Không tìm thấy file: " << start_path << " (Code: " << res << ")" << std::endl;
+    // Ưu tiên nạp continue.mp3 (âm thanh động cơ bay liên tục), fallback sang start.mp3
+    std::string sound_path = resolve_path("continue.mp3", audio_dir);
+    res = ma_sound_init_from_file(&m_impl->engine, sound_path.c_str(), 0, NULL, NULL, &m_impl->engine_sound);
+    if (res != MA_SUCCESS) {
+        sound_path = resolve_path("start.mp3", audio_dir);
+        res = ma_sound_init_from_file(&m_impl->engine, sound_path.c_str(), 0, NULL, NULL, &m_impl->engine_sound);
     }
 
-    res = ma_sound_init_from_file(&m_impl->engine, continue_path.c_str(), 0, NULL, NULL, &m_impl->continue_sound);
     if (res == MA_SUCCESS) {
-        ma_sound_set_looping(&m_impl->continue_sound, MA_TRUE);
-        m_impl->continue_loaded = true;
-        std::cout << "[✓] Nạp âm thanh bay liên tục: " << continue_path << std::endl;
+        ma_sound_set_looping(&m_impl->engine_sound, MA_TRUE);
+        ma_sound_set_volume(&m_impl->engine_sound, 0.0f);
+        // Bắt đầu phát âm thanh lặp vô tận ở volume 0.0 ngay khi khởi tạo
+        // Nhờ vậy luồng audio luôn sẵn sàng (Hot/Pre-primed), loại bỏ hoàn toàn 100% độ trễ khởi động khi bấm Y!
+        ma_sound_start(&m_impl->engine_sound);
+        m_impl->sound_loaded = true;
+        std::cout << "[✓] Nạp âm thanh động cơ drone (Pre-primed Looping): " << sound_path << std::endl;
     } else {
-        std::cerr << "[!] Không tìm thấy file: " << continue_path << " (Code: " << res << ")" << std::endl;
+        std::cerr << "[!] Không tìm thấy file âm thanh động cơ drone (Code: " << res << ")" << std::endl;
     }
 
     m_state = STATE_IDLE;
-    m_volume = 0.85f;
-    m_initialized = (m_impl->start_loaded || m_impl->continue_loaded);
+    m_volume = 0.0f;
+    m_playing = false;
+    m_land_start_alt = 2.0f;
+    m_initialized = m_impl->sound_loaded;
     return m_initialized;
 }
 
 void DroneSoundManager::update(bool is_armed, bool is_landing, float altitude, float motor_speed_w0) {
-    if (!m_initialized || !m_impl->engine_ready) return;
+    if (!m_initialized || !m_impl->engine_ready || !m_impl->sound_loaded) return;
 
-    // Khi người dùng phanh khẩn cấp / Disarm và drone đã ở sát mặt đất -> Ngắt âm thanh lập tức
-    if (!is_armed && altitude <= 0.15f) {
-        if (m_state != STATE_IDLE) {
+    // 1. Máy bay nằm yên trên mặt đất / Disarmed:
+    // Khi máy bay không ARM và ở sát mặt đất (altitude <= 0.20m) -> Âm thanh tắt hoàn toàn (Volume = 0)
+    if (!is_armed && altitude <= 0.20f) {
+        if (m_playing || m_state != STATE_IDLE || m_volume > 0.001f) {
             stop();
-            m_state = STATE_IDLE;
-            m_volume = 0.85f;
-            std::cout << "\n[🔇 Âm thanh] Drone đã tiếp đất / ngắt động cơ -> Đã tắt âm thanh." << std::endl;
+            std::cout << "\n[🔇 Âm thanh] Máy bay đã tiếp đất an toàn -> Âm thanh tắt hoàn toàn." << std::endl;
         }
         return;
     }
 
-    // 1. Xử lý trạng thái ĐANG HẠ CÁNH (Giảm âm lượng từ từ - Fade-out)
+    // Đánh dấu âm thanh đang hoạt động khi máy bay ARM
+    // Khởi tạo ngay âm lượng xuất phát 0.20 (không bị delay do bộ lọc từ 0.0)
+    if (is_armed && !m_playing) {
+        m_playing = true;
+        m_volume = 0.20f;
+        ma_sound_set_volume(&m_impl->engine_sound, m_volume);
+        std::cout << "\n[🔊 Âm thanh] Kích hoạt cất cánh tức thì -> Âm lượng tăng dần theo độ cao..." << std::endl;
+    }
+
+    // 2. Tính toán mục tiêu âm lượng (target_vol) và cao độ (target_pitch)
+    // Hoàn toàn mượt mà theo độ cao thực tế (Altitude) và vòng tua motor
+    float target_vol = 0.85f;
+    float target_pitch = 1.0f;
+
     if (is_landing) {
-        if (m_state != STATE_LANDING && m_state != STATE_IDLE) {
+        // --- CHẾ ĐỘ HẠ CÁNH (Âm lượng GIẢM DẦN theo độ cao cho tới khi tiếp đất thì tắt hẳn) ---
+        if (m_state != STATE_LANDING) {
             m_state = STATE_LANDING;
-            std::cout << "\n[🔉 Âm thanh] Nhận lệnh hạ cánh -> Âm lượng đang giảm dần (Fade-out)..." << std::endl;
+            m_land_start_alt = std::max(altitude, 1.0f);
+            std::cout << "\n[🔉 Âm thanh] Bắt đầu hạ cánh -> Âm lượng giảm dần đều từ trên cao xuống đất..." << std::endl;
         }
 
-        if (m_state == STATE_LANDING) {
-            // Giảm âm lượng 0.005f mỗi chu kỳ 10ms (100Hz) -> Mất ~1.7s để tắt hẳn
-            m_volume = std::max(0.0f, m_volume - 0.005f);
+        // Tỷ lệ độ cao từ lúc bắt đầu hạ cánh xuống mặt đất (~0.14m)
+        float land_range = std::max(0.20f, m_land_start_alt - 0.14f);
+        float alt_ratio = std::clamp((altitude - 0.14f) / land_range, 0.0f, 1.0f);
 
-            if (m_impl->continue_loaded) {
-                ma_sound_set_volume(&m_impl->continue_sound, m_volume);
-            }
-            if (m_impl->start_loaded) {
-                ma_sound_set_volume(&m_impl->start_sound, m_volume);
-            }
+        // Áp dụng đường cong suy giảm âm lượng thực tế (Perceptual Loudness Curve):
+        // Ở 2.0m: 0.85 (vang to) -> 1.0m: 0.30 -> 0.5m: 0.10 -> chạm đất (0.14m): 0.00 (tắt hẳn)
+        float curved_fade = std::pow(alt_ratio, 1.35f);
+        target_vol = 0.85f * curved_fade;
 
-            // Drone đã tiếp đất an toàn (độ cao thấp và tốc độ quay nhỏ) hoặc âm lượng đã tắt hết
-            if ((altitude <= 0.12f && motor_speed_w0 < 100.0f) || (m_volume <= 0.001f && altitude <= 0.20f)) {
-                stop();
-                m_state = STATE_IDLE;
-                m_volume = 0.85f;
-                std::cout << "\n[🔇 Âm thanh] Máy bay đã hạ cánh thành công -> Âm thanh đã tắt hoàn toàn." << std::endl;
-            }
-            return;
-        }
+        // Cao độ âm thanh cũng hạ trầm dần theo độ cao tạo cảm giác xả gió hạ cánh
+        target_pitch = 0.78f + 0.30f * curved_fade;
+
+    } else if (is_armed) {
+        // --- CHẾ ĐỘ CẤT CÁNH & BAY LÊN (Âm lượng TĂNG DẦN theo độ cao thực tế) ---
+        m_state = (altitude < 1.6f) ? STATE_STARTING : STATE_CONTINUE;
+
+        // Tỷ lệ độ cao leo dốc từ mặt đất (0.14m) lên độ cao bay chuẩn (1.90m)
+        float climb_ratio = std::clamp((altitude - 0.14f) / 1.76f, 0.0f, 1.0f);
+        float curved_climb = std::pow(climb_ratio, 0.85f);
+
+        // Tăng dần âm lượng theo độ cao:
+        // - Vừa kích hoạt cất cánh trên mặt đất: 0.20 (tiếng đề pa êm ái)
+        // - Càng bay lên cao âm lượng càng TĂNG DẦN ĐỀU lên 0.85
+        target_vol = 0.20f + 0.65f * curved_climb;
+        target_pitch = 0.82f + 0.26f * curved_climb;
+
+    } else {
+        m_state = STATE_IDLE;
+        target_vol = 0.0f;
     }
 
-    // Khôi phục nếu người dùng hủy hạ cánh giữa chừng (ví dụ kéo ga bay lên lại)
-    if (m_state == STATE_LANDING && !is_landing && is_armed && altitude > 0.20f) {
-        m_state = STATE_CONTINUE;
-        m_volume = 0.85f;
-        if (m_impl->continue_loaded) {
-            ma_sound_set_volume(&m_impl->continue_sound, m_volume);
-        }
-        std::cout << "\n[🔊 Âm thanh] Hủy hạ cánh -> Khôi phục âm lượng bay bình thường." << std::endl;
-    }
+    // 3. Bộ lọc làm mượt âm lượng
+    // Khi hạ cánh dùng hệ số nhanh hơn (0.22) để triệt tiêu hoàn toàn độ trễ khi tiếp đất
+    float alpha = is_landing ? 0.22f : 0.15f;
+    m_volume += (target_vol - m_volume) * alpha;
 
-    // 2. Drone đang ở trạng thái chuẩn bị bay / cất cánh từ mặt đất
-    if (m_state == STATE_IDLE) {
-        if (is_armed || (altitude >= 0.20f && motor_speed_w0 >= 150.0f)) {
-            m_state = STATE_STARTING;
-            m_volume = 0.85f;
-            if (m_impl->start_loaded) {
-                ma_sound_seek_to_pcm_frame(&m_impl->start_sound, 0);
-                ma_sound_set_volume(&m_impl->start_sound, m_volume);
-                ma_sound_start(&m_impl->start_sound);
-                std::cout << "\n[🔊 Âm thanh] Cất cánh từ mặt đất -> Đang phát start.mp3..." << std::endl;
-            } else {
-                m_state = STATE_CONTINUE;
-                if (m_impl->continue_loaded) {
-                    ma_sound_seek_to_pcm_frame(&m_impl->continue_sound, 0);
-                    ma_sound_set_looping(&m_impl->continue_sound, MA_TRUE);
-                    ma_sound_set_volume(&m_impl->continue_sound, m_volume);
-                    ma_sound_start(&m_impl->continue_sound);
-                }
-            }
-        }
-    } else if (m_state == STATE_STARTING) {
-        // Kiểm tra xem audio start.mp3 đã phát hết chưa
-        bool finished = false;
-        if (m_impl->start_loaded) {
-            finished = ma_sound_at_end(&m_impl->start_sound);
-        } else {
-            finished = true;
-        }
-
-        if (finished) {
-            // Hết audio start.mp3 -> Chuyển sang continue.mp3 và lặp lại mãi mãi
-            if (m_impl->start_loaded) {
-                ma_sound_stop(&m_impl->start_sound);
-            }
-            if (m_impl->continue_loaded) {
-                ma_sound_seek_to_pcm_frame(&m_impl->continue_sound, 0);
-                ma_sound_set_looping(&m_impl->continue_sound, MA_TRUE);
-                ma_sound_set_volume(&m_impl->continue_sound, 0.85f);
-                ma_sound_start(&m_impl->continue_sound);
-            }
-            m_state = STATE_CONTINUE;
-            std::cout << "\n[🔊 Âm thanh] start.mp3 kết thúc -> Chuyển sang continue.mp3 (lặp vô tận)..." << std::endl;
-        }
-    } else if (m_state == STATE_CONTINUE) {
-        // Đang bay liên tục: điều chỉnh nhẹ cao độ (pitch) theo tốc độ motor để tạo cảm giác chân thực
-        if (m_impl->continue_loaded) {
-            float norm = (motor_speed_w0 - 550.0f) / 400.0f;
-            if (norm < 0.0f) norm = 0.0f;
-            if (norm > 1.0f) norm = 1.0f;
-            float pitch = 0.95f + 0.25f * norm;
-            ma_sound_set_pitch(&m_impl->continue_sound, pitch);
-            ma_sound_set_volume(&m_impl->continue_sound, m_volume);
-        }
+    // Khi hạ cánh xuống sát đất, cắt dứt khoát về 0 để không bị ngâm tiếng
+    if (is_landing && target_vol < 0.015f) {
+        m_volume = 0.0f;
     }
+    m_volume = std::clamp(m_volume, 0.0f, 0.90f);
+
+    ma_sound_set_volume(&m_impl->engine_sound, m_volume);
+    ma_sound_set_pitch(&m_impl->engine_sound, target_pitch);
 }
 
 void DroneSoundManager::stop() {
-    if (m_impl) {
-        if (m_impl->start_loaded) {
-            ma_sound_stop(&m_impl->start_sound);
-            ma_sound_seek_to_pcm_frame(&m_impl->start_sound, 0);
-        }
-        if (m_impl->continue_loaded) {
-            ma_sound_stop(&m_impl->continue_sound);
-            ma_sound_seek_to_pcm_frame(&m_impl->continue_sound, 0);
-        }
+    if (m_impl && m_impl->sound_loaded) {
+        ma_sound_set_volume(&m_impl->engine_sound, 0.0f);
     }
+    m_playing = false;
+    m_volume = 0.0f;
+    m_state = STATE_IDLE;
 }
 
 void DroneSoundManager::cleanup() {
-    stop();
     if (m_impl) {
-        if (m_impl->start_loaded) {
-            ma_sound_uninit(&m_impl->start_sound);
-            m_impl->start_loaded = false;
-        }
-        if (m_impl->continue_loaded) {
-            ma_sound_uninit(&m_impl->continue_sound);
-            m_impl->continue_loaded = false;
+        if (m_impl->sound_loaded) {
+            ma_sound_stop(&m_impl->engine_sound);
+            ma_sound_uninit(&m_impl->engine_sound);
+            m_impl->sound_loaded = false;
         }
         if (m_impl->engine_ready) {
             ma_engine_uninit(&m_impl->engine);
@@ -219,5 +183,7 @@ void DroneSoundManager::cleanup() {
         }
     }
     m_initialized = false;
+    m_playing = false;
+    m_volume = 0.0f;
     m_state = STATE_IDLE;
 }

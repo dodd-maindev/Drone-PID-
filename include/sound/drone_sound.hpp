@@ -35,6 +35,8 @@ private:
     Impl* m_impl;
     SoundState m_state;
     bool m_initialized;
+    bool m_playing;
     float m_volume;
+    float m_land_start_alt;
 };
 
