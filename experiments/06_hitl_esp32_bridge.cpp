@@ -18,6 +18,7 @@
 #include <vector>
 #include <cmath>
 #include <mutex>
+#include <fstream>
 #include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -189,16 +190,165 @@ int create_udp_receiver_socket(int port = 9099) {
 
 // Lấy IP của WSL2
 std::string get_wsl_ip() {
-    FILE* fp = popen("hostname -I 2>/dev/null", "r");
-    if (!fp) return "127.0.0.1";
+    // 1. Thử lấy IP eth0 trước (chính xác nhất trong WSL2)
+    FILE* fp = popen("ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | head -n1", "r");
     char buf[128];
+    if (fp) {
+        if (fgets(buf, sizeof(buf), fp)) {
+            char* token = strtok(buf, " \t\r\n");
+            if (token && strlen(token) > 6) {
+                pclose(fp);
+                return token;
+            }
+        }
+        pclose(fp);
+    }
+    // 2. Fallback sang hostname -I (bỏ qua docker bridge 172.17)
+    fp = popen("hostname -I 2>/dev/null", "r");
+    if (!fp) return "127.0.0.1";
     std::string ip = "127.0.0.1";
     if (fgets(buf, sizeof(buf), fp)) {
         char* token = strtok(buf, " \t\r\n");
-        if (token) ip = token;
+        while (token) {
+            if (strncmp(token, "172.17.", 7) != 0) {
+                ip = token;
+                break;
+            }
+            token = strtok(NULL, " \t\r\n");
+        }
     }
     pclose(fp);
     return ip;
+}
+
+// Tìm đường dẫn file thực thi XboxBridge.exe tự động theo vị trí binary
+std::string find_xbox_bridge_exe() {
+    char self_buf[1024];
+    ssize_t len = readlink("/proc/self/exe", self_buf, sizeof(self_buf) - 1);
+    if (len > 0) {
+        self_buf[len] = '\0';
+        std::string self_path(self_buf);
+        size_t last_slash = self_path.find_last_of('/');
+        if (last_slash != std::string::npos) {
+            std::string bin_dir = self_path.substr(0, last_slash);
+            std::string c1 = bin_dir + "/XboxBridge.exe";
+            if (access(c1.c_str(), R_OK) == 0) return c1;
+            std::string c2 = bin_dir + "/xbox_controller_bridge.exe";
+            if (access(c2.c_str(), R_OK) == 0) return c2;
+            std::string c3 = bin_dir + "/../tools/xbox_controller_bridge.exe";
+            if (access(c3.c_str(), R_OK) == 0) return c3;
+        }
+    }
+
+    const char* relatives[] = {
+        "bin/XboxBridge.exe",
+        "./XboxBridge.exe",
+        "XboxBridge.exe",
+        "tools/xbox_controller_bridge.exe",
+        "/home/do/drone_control_cpp/tools/xbox_controller_bridge.exe",
+        nullptr
+    };
+    for (int i = 0; relatives[i]; ++i) {
+        if (access(relatives[i], R_OK) == 0) return relatives[i];
+    }
+    return "";
+}
+
+// Hệ thống ghi file log cho Cầu nối Drone HITL
+static std::ofstream g_log_file;
+static std::mutex g_log_mutex;
+
+void init_logging() {
+    g_log_file.open("hitl_bridge.log", std::ios::out | std::ios::trunc);
+    if (g_log_file.is_open()) {
+        auto now = std::chrono::system_clock::now();
+        std::time_t t = std::chrono::system_clock::to_time_t(now);
+        g_log_file << "============================================================\n";
+        g_log_file << " DRONE HITL ESP32 BRIDGE - HỆ THỐNG GHI LOG SỰ KIỆN\n";
+        g_log_file << " Khởi động lúc: " << std::ctime(&t);
+        g_log_file << "============================================================\n" << std::flush;
+    }
+}
+
+void log_event(const std::string& tag, const std::string& msg) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    if (!g_log_file.is_open()) return;
+
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm_buf;
+    localtime_r(&t, &tm_buf);
+    char time_str[32];
+    std::strftime(time_str, sizeof(time_str), "%H:%M:%S", &tm_buf);
+
+    g_log_file << "[" << time_str << "." << std::setfill('0') << std::setw(3) << ms.count() << "] ["
+               << tag << "] " << msg << "\n" << std::flush;
+}
+
+// Khởi chạy an toàn XboxBridge trên Windows (tránh lỗi UNC path của PowerShell trong WSL2)
+bool is_xbox_bridge_running() {
+    FILE* pfp = popen("powershell.exe -NoProfile -Command \"if (Get-Process -Name 'XboxBridge' -ErrorAction SilentlyContinue) { Write-Output 'RUNNING' } else { Write-Output 'STOPPED' }\" 2>/dev/null", "r");
+    if (!pfp) return false;
+    char pbuf[64];
+    std::string res = "";
+    if (fgets(pbuf, sizeof(pbuf), pfp)) {
+        res = pbuf;
+    }
+    pclose(pfp);
+    return (res.find("RUNNING") != std::string::npos);
+}
+
+// Khởi chạy an toàn XboxBridge trên Windows (tránh lỗi UNC path và không tắt nhầm tiến trình đang chạy)
+bool launch_xbox_bridge_windows(const std::string& bridge_exe, const std::string& wsl_ip) {
+    if (bridge_exe.empty()) {
+        log_event("BRIDGE_LAUNCH", "Không tìm thấy file XboxBridge.exe");
+        return false;
+    }
+
+    // Nếu tiến trình XboxBridge trên Windows đã đang chạy sẵn (ví dụ được bật từ run.sh), giữ nguyên không tắt!
+    if (is_xbox_bridge_running()) {
+        log_event("BRIDGE_LAUNCH", "XboxBridge.exe đã đang chạy sẵn trên Windows. Tiếp tục sử dụng.");
+        std::cout << "[✓] Cầu nối Tay Cầm Xbox trên Windows đã đang chạy sẵn!" << std::endl;
+        std::cout << "    [ℹ] Cửa sổ console Xbox hiển thị trên màn hình Windows | Log: C:\\DroneHITL\\XboxBridge.log" << std::endl;
+        return true;
+    }
+
+    log_event("BRIDGE_LAUNCH", "Khởi chạy mới XboxBridge từ: " + bridge_exe + " (Target WSL: " + wsl_ip + ":9099)");
+
+    // Sao chép sang Windows C:\DroneHITL\XboxBridge.exe vì Windows không cho chạy .exe trực tiếp từ UNC share (\\wsl.localhost)
+    if (access("/mnt/c", F_OK) == 0) {
+        system("mkdir -p /mnt/c/DroneHITL 2>/dev/null");
+        std::string cp_cmd = "cp -f \"" + bridge_exe + "\" /mnt/c/DroneHITL/XboxBridge.exe 2>/dev/null";
+        system(cp_cmd.c_str());
+        log_event("BRIDGE_LAUNCH", "Đã sao chép XboxBridge.exe vào /mnt/c/DroneHITL/XboxBridge.exe");
+    }
+
+    // Khởi chạy XboxBridge với CỬA SỔ HIỂN THỊ RÕ RÀNG để người dùng theo dõi log thời gian thực
+    std::string ps_cmd = "powershell.exe -NoProfile -Command \"Start-Process -FilePath 'C:\\DroneHITL\\XboxBridge.exe' -ArgumentList '" + wsl_ip + " 9099'; Start-Sleep -Milliseconds 400; if (Get-Process -Name 'XboxBridge' -ErrorAction SilentlyContinue) { Write-Output 'RUNNING' } else { Write-Output 'FAIL' }\" 2>/dev/null";
+
+    FILE* pfp = popen(ps_cmd.c_str(), "r");
+    std::string result = "";
+    if (pfp) {
+        char pbuf[256];
+        if (fgets(pbuf, sizeof(pbuf), pfp)) {
+            char* ptoken = strtok(pbuf, "\r\n ");
+            if (ptoken) result = ptoken;
+        }
+        pclose(pfp);
+    }
+
+    if (result == "RUNNING") {
+        log_event("BRIDGE_LAUNCH", "Khởi chạy thành công XboxBridge.exe trên Windows! (Target: " + wsl_ip + ":9099)");
+        std::cout << "[✓] Đã kích hoạt Cầu nối Tay Cầm Xbox trên Windows (C:\\DroneHITL\\XboxBridge.exe -> " << wsl_ip << ":9099)!" << std::endl;
+        std::cout << "    [ℹ] Cửa sổ console Xbox đang hiển thị trên màn hình Windows | Log: C:\\DroneHITL\\XboxBridge.log" << std::endl;
+        return true;
+    } else {
+        log_event("BRIDGE_LAUNCH", "Không thể tự động khởi chạy XboxBridge qua PowerShell (Trạng thái: " + result + ")");
+        std::cerr << "[!] Cảnh báo: Chưa thể tự động khởi chạy XboxBridge.exe (Trạng thái: " << result << ")" << std::endl;
+        std::cerr << "    Bạn có thể tự mở file trên Windows: C:\\DroneHITL\\XboxBridge.exe" << std::endl;
+        return false;
+    }
 }
 
 // Biến lưu trạng thái Odometry từ Gazebo
@@ -236,6 +386,10 @@ void on_odometry(const gz::msgs::Odometry& msg) {
 
 
 int main(int argc, char** argv) {
+    // Khởi tạo hệ thống ghi file log
+    init_logging();
+    log_event("STARTUP", "Khởi động cầu nối Drone HITL (ESP32 <-> Gazebo Sim)");
+
     std::string serial_port = "";
     if (argc > 1) {
         serial_port = argv[1];
@@ -255,11 +409,14 @@ int main(int argc, char** argv) {
         }
     }
 
+    log_event("STARTUP", "Cổng Serial được chọn: " + serial_port);
+
     std::cout << "============================================================" << std::endl;
     std::cout << " CẦU NỐI HARDWARE-IN-THE-LOOP (HITL) ESP32 <-> GAZEBO SIM" << std::endl;
     std::cout << " Điều khiển Quadrotor x500 bằng Lõi Firmware trên ESP32" << std::endl;
     std::cout << "============================================================" << std::endl;
     std::cout << " Cổng Serial: " << serial_port << " (Tốc độ: 921600 baud)" << std::endl;
+    std::cout << " Log hệ thống: ./hitl_bridge.log (WSL) & C:\\DroneHITL\\XboxBridge.log (Windows)" << std::endl;
     std::cout << "------------------------------------------------------------" << std::endl;
     std::cout << " [🎮 HƯỚNG DẪN ĐIỀU KHIỂN TAY CẦM XBOX 360]:" << std::endl;
     std::cout << "   • [Nút Y]           : CẤT CÁNH lên 2.0m (Takeoff)" << std::endl;
@@ -274,7 +431,7 @@ int main(int argc, char** argv) {
     std::cout << "   • [Nút BACK]        : Phanh dừng khẩn cấp / DISARM" << std::endl;
     std::cout << "------------------------------------------------------------" << std::endl;
     std::cout << " [⌨️ BÀN PHÍM DỰ PHÒNG]:" << std::endl;
-    std::cout << "   • [Q] Cất cánh | [A] Hạ cánh | [W / S] Độ cao | [I/K/J/L] Lái" << std::endl;
+    std::cout << "   • [Y hoặc Q] Cất cánh | [A] Hạ cánh | [W / S] Độ cao | [I/K/J/L] Lái" << std::endl;
     std::cout << "   • [Z / C] Xoay Yaw | [F] Khóa Camera | [R + J/L/I/K] Lộn 360°" << std::endl;
     std::cout << "   • [SPACE] Phanh khẩn | [X] Thoát" << std::endl;
     std::cout << "============================================================\n" << std::endl;
@@ -282,6 +439,7 @@ int main(int argc, char** argv) {
     // 1. Mở cổng Serial kết nối ESP32
     int serial_fd = open_serial_port(serial_port);
     if (serial_fd < 0) {
+        log_event("SERIAL", "LỖI: Không thể mở cổng Serial: " + serial_port);
         std::cerr << "[!] KHÔNG THỂ MỞ CỔNG SERIAL: " << serial_port << std::endl;
         std::cerr << "    Gợi ý:" << std::endl;
         std::cerr << "    - Cắm ESP32 vào cổng USB máy tính." << std::endl;
@@ -290,24 +448,27 @@ int main(int argc, char** argv) {
         std::cerr << "    - Hoặc chạy với cú pháp: " << argv[0] << " /dev/ttyACM0 (hoặc cổng tương ứng)" << std::endl;
         return -1;
     }
+    log_event("SERIAL", "Mở thành công cổng Serial " + serial_port + " @ 921600 baud");
     std::cout << "[✓] Đã mở thành công cổng Serial " << serial_port << " ở tốc độ 921600 baud!" << std::endl;
 
     // 2. Khởi tạo UDP Socket và Cầu nối Tay Cầm Xbox 360
     int udp_sock = create_udp_receiver_socket(9099);
     std::string wsl_ip = get_wsl_ip();
     if (udp_sock >= 0) {
+        log_event("UDP", "Socket UDP 9099 đã mở thành công. WSL IP: " + wsl_ip);
         std::cout << "[✓] Đã mở cổng UDP 9099 nhận tín hiệu tay cầm (IP WSL: " << wsl_ip << ")" << std::endl;
     } else {
+        log_event("UDP", "CẢNH BÁO: Không thể mở socket UDP 9099!");
         std::cerr << "[!] Cảnh báo: Không thể mở socket UDP 9099 cho tay cầm!" << std::endl;
     }
 
     // Tự động khởi chạy cầu nối Xbox Windows bridge nếu có
-    system("pkill -f xbox_controller_bridge.exe 2>/dev/null");
-    std::string bridge_exe = "/home/do/drone_control_cpp/tools/xbox_controller_bridge.exe";
-    if (access(bridge_exe.c_str(), X_OK) == 0) {
-        std::string launch_cmd = bridge_exe + " " + wsl_ip + " 9099 > /dev/null 2>&1 &";
-        system(launch_cmd.c_str());
-        std::cout << "[✓] Đã tự động kích hoạt Cầu nối Tay cầm Xbox 360 trên Windows!" << std::endl;
+    std::string bridge_exe = find_xbox_bridge_exe();
+    if (!bridge_exe.empty()) {
+        launch_xbox_bridge_windows(bridge_exe, wsl_ip);
+    } else {
+        log_event("BRIDGE_LAUNCH", "Không tìm thấy file XboxBridge.exe trong các thư mục định sẵn");
+        std::cout << "[ℹ] Chờ nhận tín hiệu tay cầm qua cổng UDP 9099..." << std::endl;
     }
 
     // 3. Khởi tạo Gazebo Transport IPC
@@ -414,6 +575,7 @@ int main(int argc, char** argv) {
     memset(&latest_xbox_pkt, 0, sizeof(latest_xbox_pkt));
     uint16_t last_xbox_buttons = 0;
     bool xbox_connected = false;
+    uint32_t total_udp_packets = 0;
     auto last_xbox_pkt_time = std::chrono::steady_clock::now() - std::chrono::seconds(5);
 
     // Bộ đệm nhận UART từ ESP32
@@ -436,15 +598,30 @@ int main(int argc, char** argv) {
             XboxUdpPacket temp_pkt;
             while (recv(udp_sock, &temp_pkt, sizeof(temp_pkt), 0) == sizeof(temp_pkt)) {
                 if (temp_pkt.magic == 0x58424F58) {
+                    total_udp_packets++;
+                    if (total_udp_packets == 1) {
+                        log_event("XBOX_UDP", "Đã nhận gói UDP đầu tiên từ XboxBridge! is_connected=" + std::to_string((int)temp_pkt.is_connected));
+                        std::cout << "\n[✓ XBOX] Đã nhận tín hiệu từ Windows XboxBridge! (" << (temp_pkt.is_connected ? "Tay cầm: SẴN SÀNG" : "Tay cầm: CHƯA CẮM") << ")" << std::endl;
+                    }
                     latest_xbox_pkt = temp_pkt;
                     last_xbox_pkt_time = now;
+                    bool prev_state = xbox_connected;
                     xbox_connected = (temp_pkt.is_connected != 0);
+                    if (!prev_state && xbox_connected) {
+                        log_event("XBOX_STATE", "Tay cầm Xbox ĐÃ ĐƯỢC CẮM / KẾT NỐI!");
+                        std::cout << "\n[🎮 XBOX] Tay cầm đã kết nối! Bạn có thể nhấn Y để cất cánh." << std::endl;
+                    } else if (prev_state && !xbox_connected) {
+                        log_event("XBOX_STATE", "Tay cầm Xbox ĐÃ BỊ RÚT / MẤT KẾT NỐI!");
+                    }
                 }
             }
         }
 
         // Kiểm tra timeout kết nối tay cầm (mất tín hiệu > 500ms)
         if (std::chrono::duration<double>(now - last_xbox_pkt_time).count() > 0.5) {
+            if (xbox_connected) {
+                log_event("XBOX_TIMEOUT", "Mất tín hiệu UDP từ XboxBridge (> 500ms)");
+            }
             xbox_connected = false;
         }
 
@@ -467,6 +644,7 @@ int main(int argc, char** argv) {
                 req_takeoff = true;
                 req_land = false;
                 send_camera_follow();
+                log_event("XBOX_BTN", "Nút Y được bấm -> ARM ĐỘNG CƠ & CẤT CÁNH LÊN 2.0M");
                 std::cout << "\n[🚀 TAKEOFF] Nút Y Xbox 360 -> ARM & CẤT CÁNH LÊN 2.0M!" << std::endl;
             }
 
@@ -474,6 +652,7 @@ int main(int argc, char** argv) {
             if ((btns & XBOX_BTN_A) && !(last_xbox_buttons & XBOX_BTN_A)) {
                 req_land = true;
                 req_takeoff = false;
+                log_event("XBOX_BTN", "Nút A được bấm -> HẠ CÁNH AN TOÀN");
                 std::cout << "\n[🛑 LAND] Nút A Xbox 360 -> HẠ CÁNH AN TOÀN!" << std::endl;
             }
 
@@ -482,12 +661,14 @@ int main(int argc, char** argv) {
                 is_armed = false;
                 req_takeoff = false;
                 req_land = false;
+                log_event("XBOX_BTN", "Nút BACK được bấm -> PHANH KHẨN CẤP / DISARM");
                 std::cout << "\n[⚠️ EMERGENCY] Nút BACK Xbox 360 -> Phanh khẩn cấp / DISARM!" << std::endl;
             }
 
             // Phím RB: Khóa lại góc nhìn camera tự động bám theo Drone (Follow Mode)
             if ((btns & XBOX_BTN_RB) && !(last_xbox_buttons & XBOX_BTN_RB)) {
                 send_camera_follow();
+                log_event("XBOX_BTN", "Nút RB được bấm -> KHÓA CAMERA THEO DRONE");
                 std::cout << "\n[📷 CAMERA] Nút RB Xbox 360 -> Tự động khóa góc nhìn bám theo drone!" << std::endl;
             }
 
@@ -612,20 +793,24 @@ int main(int argc, char** argv) {
         char key = read_key();
         if (key != 0) {
             switch (key) {
+                case 'y': case 'Y':
                 case 'q': case 'Q':
                     is_armed = true;
                     req_takeoff = true;
                     req_land = false;
                     send_camera_follow();
-                    std::cout << "\n[🚀 TAKEOFF] Đã nhận phím Q -> ARM ĐỘNG CƠ & CẤT CÁNH LÊN 2.0M!" << std::endl;
+                    log_event("KEYBOARD", std::string("Phím '") + key + "' -> ARM ĐỘNG CƠ & CẤT CÁNH LÊN 2.0M");
+                    std::cout << "\n[🚀 TAKEOFF] Đã nhận phím " << key << " -> ARM ĐỘNG CƠ & CẤT CÁNH LÊN 2.0M!" << std::endl;
                     break;
                 case 'a': case 'A':
                     req_land = true;
                     req_takeoff = false;
+                    log_event("KEYBOARD", "Phím 'A' -> HẠ CÁNH AN TOÀN");
                     std::cout << "\n[🛑 LAND] Đã nhận phím A -> HẠ CÁNH AN TOÀN!" << std::endl;
                     break;
                 case 'f': case 'F':
                     send_camera_follow();
+                    log_event("KEYBOARD", "Phím 'F' -> KHÓA CAMERA BÁM THEO DRONE");
                     std::cout << "\n[📷 CAMERA] Đã nhận phím F -> Tự động khóa góc nhìn bám theo drone!" << std::endl;
                     break;
                 case 'r': case 'R':
@@ -727,9 +912,11 @@ int main(int argc, char** argv) {
                     is_armed = false;
                     req_takeoff = false;
                     req_land = false;
+                    log_event("KEYBOARD", "Phím SPACE -> PHANH KHẨN CẤP / DISARM");
                     std::cout << "\n[⚠️ EMERGENCY] Phanh khẩn cấp / DISARM!" << std::endl;
                     break;
                 case 'x': case 'X':
+                    log_event("KEYBOARD", "Phím X -> YÊU CẦU THOÁT");
                     running = false;
                     break;
             }
@@ -1021,6 +1208,18 @@ int main(int argc, char** argv) {
         // Cập nhật âm thanh động cơ (cất cánh phát start.mp3, bay lặp continue.mp3, hạ cánh giảm dần rồi tắt)
         sound_mgr.update(is_armed, req_land, g_pos_z, last_motor_w0);
 
+        // Ghi log định kỳ mỗi 5 giây vào hitl_bridge.log
+        static auto last_stat_log_time = std::chrono::steady_clock::now();
+        if (std::chrono::duration<double>(now - last_stat_log_time).count() >= 5.0) {
+            last_stat_log_time = now;
+            std::string stat = "Alt=" + std::to_string(g_pos_z).substr(0, 4) +
+                               "m, Tx/Rx=" + std::to_string(tx_packets) + "/" + std::to_string(rx_packets) +
+                               ", UdpPkts=" + std::to_string(total_udp_packets) +
+                               ", XboxConn=" + (xbox_connected ? "YES" : "NO") +
+                               ", Armed=" + (is_armed ? "YES" : "NO");
+            log_event("PERIODIC_STAT", stat);
+        }
+
         // 5. In thông tin HUD giám sát (30Hz)
         if (std::chrono::duration<double>(now - last_hud_time).count() >= 0.033) {
             last_hud_time = now;
@@ -1028,14 +1227,21 @@ int main(int argc, char** argv) {
             if (flip_phase != PHASE_IDLE) {
                 status_str = "🌀 FLIP 360°...";
             } else if (!is_armed) {
-                status_str = "DISARMED (Bấm Y để bay)";
+                status_str = "DISARMED (Bấm Y/Q để bay)";
             } else if (req_land) {
                 status_str = "HẠ CÁNH...";
             } else {
                 status_str = "ĐANG BAY";
             }
 
-            std::string pad_status = xbox_connected ? "🎮 Xbox: ON" : "⌨️ Phím: ON";
+            std::string pad_status;
+            if (xbox_connected) {
+                pad_status = "🎮 Xbox: ON (" + std::to_string(total_udp_packets) + " pkts)";
+            } else if (total_udp_packets > 0) {
+                pad_status = "🎮 Xbox: CHỜ TAY CẦM";
+            } else {
+                pad_status = "⌨️ Phím: ON (Chờ Xbox. Bấm Y/Q trên phím để bay)";
+            }
 
             std::cout << "\r[⚡ HITL-ESP32] "
                       << pad_status << " | "
@@ -1061,7 +1267,12 @@ int main(int argc, char** argv) {
 
     close(serial_fd);
     if (udp_sock >= 0) close(udp_sock);
-    system("pkill -f xbox_controller_bridge.exe 2>/dev/null");
+    system("powershell.exe -NoProfile -Command \"Stop-Process -Name 'XboxBridge' -ErrorAction SilentlyContinue\" 2>/dev/null || pkill -f xbox_controller_bridge.exe 2>/dev/null || true");
+
+    log_event("SHUTDOWN", "Dừng cầu nối HITL an toàn.");
+    if (g_log_file.is_open()) {
+        g_log_file.close();
+    }
 
     std::cout << "\n[!] Đã dừng cầu nối HITL an toàn." << std::endl;
     return 0;

@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -62,29 +66,148 @@ namespace DroneControl {
             return arr;
         }
 
+        static void Log(string message) {
+            try {
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                string logFile = Path.Combine(dir, "XboxBridge.log");
+                string line = "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "] " + message + Environment.NewLine;
+                File.AppendAllText(logFile, line);
+            } catch {}
+        }
+
+        // Tự động tìm IP của máy ảo WSL2 từ Windows
+        static string AutoDetectWslIp() {
+            string[] wslExeCandidates = new string[] {
+                "wsl.exe",
+                @"C:\Windows\System32\wsl.exe",
+                @"C:\Windows\Sysnative\wsl.exe"
+            };
+
+            foreach (var exe in wslExeCandidates) {
+                try {
+                    ProcessStartInfo psi = new ProcessStartInfo(exe, "hostname -I") {
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    using (Process p = Process.Start(psi)) {
+                        string outStr = p.StandardOutput.ReadToEnd();
+                        p.WaitForExit(1500);
+                        string[] tokens = outStr.Trim().Split(new char[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (string t in tokens) {
+                            IPAddress testIp;
+                            if (IPAddress.TryParse(t, out testIp)) {
+                                if (!t.StartsWith("172.17.")) {
+                                    Log("AutoDetectWslIp found via " + exe + ": " + t);
+                                    return t;
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ex) {
+                    Log("AutoDetectWslIp with " + exe + " exception: " + ex.Message);
+                }
+            }
+
+            Log("AutoDetectWslIp fallback to 127.0.0.1");
+            return "127.0.0.1";
+        }
+
+        // Tìm các địa chỉ broadcast tiềm năng (ví dụ vEthernet WSL)
+        static List<IPEndPoint> GetDestinationEndPoints(string primaryIp, int port) {
+            List<IPEndPoint> list = new List<IPEndPoint>();
+            HashSet<string> added = new HashSet<string>();
+
+            Action<string> addIp = (ipStr) => {
+                IPAddress ip;
+                if (IPAddress.TryParse(ipStr, out ip) && !added.Contains(ipStr)) {
+                    added.Add(ipStr);
+                    list.Add(new IPEndPoint(ip, port));
+                }
+            };
+
+            addIp(primaryIp);
+            addIp("127.0.0.1");
+
+            // Quét các card mạng trên Windows, đặc biệt là card ảo WSL
+            try {
+                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces()) {
+                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                    IPInterfaceProperties props = ni.GetIPProperties();
+                    foreach (UnicastIPAddressInformation u in props.UnicastAddresses) {
+                        if (u.Address.AddressFamily == AddressFamily.InterNetwork) {
+                            byte[] ipBytes = u.Address.GetAddressBytes();
+                            byte[] maskBytes = (u.IPv4Mask != null) ? u.IPv4Mask.GetAddressBytes() : null;
+                            if (maskBytes != null && maskBytes.Length == 4) {
+                                byte[] bcastBytes = new byte[4];
+                                for (int i = 0; i < 4; i++) {
+                                    bcastBytes[i] = (byte)(ipBytes[i] | ~maskBytes[i]);
+                                }
+                                string bcastStr = new IPAddress(bcastBytes).ToString();
+                                addIp(bcastStr);
+                                Log("Network adapter [" + ni.Name + "] IP: " + u.Address + ", Broadcast: " + bcastStr);
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                Log("GetDestinationEndPoints scan exception: " + ex.Message);
+            }
+
+            return list;
+        }
+
         static void Main(string[] args) {
-            string targetIp = (args.Length > 0 && !string.IsNullOrEmpty(args[0])) ? args[0] : "127.0.0.1";
+            Log("====================================================");
+            Log("   XBOX 360 CONTROLLER -> WSL2/DRONE UDP BRIDGE    ");
+            Log("====================================================");
+
+            string targetIp = (args.Length > 0 && !string.IsNullOrEmpty(args[0])) ? args[0] : "";
             int port = (args.Length > 1) ? int.Parse(args[1]) : 9099;
+
+            if (string.IsNullOrEmpty(targetIp) || targetIp == "127.0.0.1") {
+                string detected = AutoDetectWslIp();
+                if (!string.IsNullOrEmpty(detected) && detected != "127.0.0.1") {
+                    targetIp = detected;
+                } else {
+                    targetIp = "127.0.0.1";
+                }
+            }
 
             Console.WriteLine("====================================================");
             Console.WriteLine("   XBOX 360 CONTROLLER -> WSL2/DRONE UDP BRIDGE    ");
             Console.WriteLine("====================================================");
-            Console.WriteLine(" Target Destination: " + targetIp + ":" + port);
+            Console.WriteLine(" Target WSL2 IP: " + targetIp + ":" + port);
             Console.WriteLine(" Frequency: 100 Hz (10ms)");
+            Console.WriteLine(" Log file: " + Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "XboxBridge.log"));
             Console.WriteLine(" Press Ctrl+C to terminate.");
             Console.WriteLine("----------------------------------------------------\n");
 
             UdpClient udp = new UdpClient();
-            IPEndPoint endPoint = new IPEndPoint(IPAddress.Parse(targetIp), port);
-            IPEndPoint loopbackEndPoint = new IPEndPoint(IPAddress.Loopback, port);
+            try {
+                udp.EnableBroadcast = true;
+            } catch {}
+
+            List<IPEndPoint> destinations = GetDestinationEndPoints(targetIp, port);
+            foreach (var ep in destinations) {
+                Log("Active Target EndPoint: " + ep.ToString());
+            }
 
             XINPUT_STATE state = new XINPUT_STATE();
             uint packetCount = 0;
             DateTime lastPrint = DateTime.Now;
+            DateTime lastHeartbeat = DateTime.Now;
+            bool lastConnected = false;
+            ushort lastButtons = 0;
 
             while (true) {
                 int res = GetControllerState(0, ref state);
                 bool connected = (res == 0);
+
+                if (connected != lastConnected) {
+                    Log(connected ? ">>> [EVENT] CONTROLLER CONNECTED via XInput <<<" : ">>> [EVENT] CONTROLLER DISCONNECTED <<<");
+                    lastConnected = connected;
+                }
 
                 XboxUdpPacket pkt = new XboxUdpPacket();
                 pkt.magic = 0x58424F58; // 'XBOX' in hex
@@ -98,21 +221,33 @@ namespace DroneControl {
                     pkt.thumbLY = state.Gamepad.sThumbLY;
                     pkt.thumbRX = state.Gamepad.sThumbRX;
                     pkt.thumbRY = state.Gamepad.sThumbRY;
+
+                    if (pkt.buttons != lastButtons) {
+                        if ((pkt.buttons & 0x8000) != 0 && (lastButtons & 0x8000) == 0) Log("[BUTTON PRESSED] Y (TAKEOFF)");
+                        if ((pkt.buttons & 0x1000) != 0 && (lastButtons & 0x1000) == 0) Log("[BUTTON PRESSED] A (LAND)");
+                        if ((pkt.buttons & 0x0020) != 0 && (lastButtons & 0x0020) == 0) Log("[BUTTON PRESSED] BACK (DISARM)");
+                        if ((pkt.buttons & 0x4000) != 0 && (lastButtons & 0x4000) == 0) Log("[BUTTON PRESSED] X (YAW LEFT)");
+                        if ((pkt.buttons & 0x2000) != 0 && (lastButtons & 0x2000) == 0) Log("[BUTTON PRESSED] B (YAW RIGHT)");
+                        lastButtons = pkt.buttons;
+                    }
                 }
 
                 byte[] data = PacketToBytes(pkt);
-                try {
-                    udp.Send(data, data.Length, endPoint);
-                    if (targetIp != "127.0.0.1") {
-                        udp.Send(data, data.Length, loopbackEndPoint);
-                    }
-                    packetCount++;
-                } catch (Exception ex) {
-                    // ignore network blips
+                for (int i = 0; i < destinations.Count; i++) {
+                    try {
+                        udp.Send(data, data.Length, destinations[i]);
+                    } catch {}
+                }
+                packetCount++;
+
+                DateTime now = DateTime.Now;
+                if ((now - lastHeartbeat).TotalSeconds >= 5) {
+                    lastHeartbeat = now;
+                    Log("Heartbeat: packets_sent=" + packetCount + ", controller_connected=" + connected);
                 }
 
-                if ((DateTime.Now - lastPrint).TotalMilliseconds >= 250) {
-                    lastPrint = DateTime.Now;
+                if ((now - lastPrint).TotalMilliseconds >= 250) {
+                    lastPrint = now;
                     string status = connected ? "[CONNECTED]" : "[NOT DETECTED]";
                     string btnStr = "";
                     if (connected) {
