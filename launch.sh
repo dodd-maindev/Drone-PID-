@@ -29,10 +29,15 @@ NC='\033[0m' # No Color
 # PID tracking để cleanup
 GAZEBO_PID=""
 BRIDGE_PID=""
+OSC_PID=""
 
 cleanup() {
     echo ""
     echo -e "${YELLOW}[*] Đang tắt tất cả...${NC}"
+    if [ -n "$OSC_PID" ] && kill -0 "$OSC_PID" 2>/dev/null; then
+        kill "$OSC_PID" 2>/dev/null
+    fi
+    pkill -f "web_oscilloscope/server.py" 2>/dev/null || true
     
     # Tắt bridge trước
     if [ -n "$BRIDGE_PID" ] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
@@ -144,33 +149,46 @@ fi
 # === BƯỚC 4: KHỞI ĐỘNG GAZEBO SIM ===
 echo -e "\n${BOLD}[4/5] Khởi động Gazebo Sim...${NC}"
 
+export GZ_IP=127.0.0.1
+export GZ_PARTITION=drone_hitl
 export GZ_SIM_RESOURCE_PATH="$SCRIPT_DIR/simulation/models:${HOME}/.gz/models"
 
 # Tự động phát hiện GPU
-if [ -d "/usr/lib/wsl" ] || grep -qi microsoft /proc/version 2>/dev/null; then
-    # WSL2: Windows Subsystem for Linux (dùng D3D12 passthrough)
+D3D12_OK=false
+
+if grep -qi microsoft /proc/version 2>/dev/null && ([ -d "/usr/lib/wsl/lib" ] || [ -d "/dev/dri" ]); then
     sudo chmod 666 /dev/dri/* 2>/dev/null || true
-    export GALLIUM_DRIVER=d3d12
-    export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
-    
-    if nvidia-smi &>/dev/null; then
-        export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
-        NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
-        echo -e "${GREEN}  ✓ GPU: WSL2 D3D12 GPU Passthrough ($NV_NAME)${NC}"
-    else
-        export MESA_D3D12_DEFAULT_ADAPTER_NAME=""
-        echo -e "${GREEN}  ✓ GPU: WSL2 D3D12 GPU Passthrough${NC}"
+    if command -v glxinfo &>/dev/null && GALLIUM_DRIVER=d3d12 LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH" glxinfo -B &>/dev/null; then
+        export GALLIUM_DRIVER=d3d12
+        export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
+        export QT_QPA_PLATFORM=xcb
+        export LIBGL_DRI3_DISABLE=1
+        D3D12_OK=true
+        if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+            export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+            NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
+            echo -e "${GREEN}  ✓ GPU: WSL2 D3D12 GPU Passthrough ($NV_NAME)${NC}"
+        else
+            echo -e "${GREEN}  ✓ GPU: WSL2 D3D12 GPU Passthrough${NC}"
+        fi
     fi
-elif command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
-    NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
-    echo -e "${GREEN}  ✓ GPU: NVIDIA Native ($NV_NAME)${NC}"
-elif lspci 2>/dev/null | grep -qi "AMD\|Radeon"; then
-    echo -e "${GREEN}  ✓ GPU: AMD${NC}"
-elif lspci 2>/dev/null | grep -qi "Intel.*Graphics"; then
-    echo -e "${GREEN}  ✓ GPU: Intel${NC}"
-else
-    export LIBGL_ALWAYS_SOFTWARE=1
-    echo -e "${YELLOW}  ⚠ Không tìm thấy GPU — CPU rendering${NC}"
+fi
+
+if [ "$D3D12_OK" = false ]; then
+    unset GALLIUM_DRIVER
+    unset MESA_D3D12_DEFAULT_ADAPTER_NAME
+    
+    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+        NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
+        echo -e "${GREEN}  ✓ GPU: NVIDIA Native ($NV_NAME)${NC}"
+    elif lspci 2>/dev/null | grep -qi "AMD\|Radeon"; then
+        echo -e "${GREEN}  ✓ GPU: AMD${NC}"
+    elif lspci 2>/dev/null | grep -qi "Intel.*Graphics"; then
+        echo -e "${GREEN}  ✓ GPU: Intel${NC}"
+    else
+        export LIBGL_ALWAYS_SOFTWARE=1
+        echo -e "${YELLOW}  [ℹ] GPU passthrough không khả dụng — dùng Mesa Software Rendering (llvmpipe)${NC}"
+    fi
 fi
 
 gz sim -r "$WORLD_SDF" &
@@ -204,9 +222,26 @@ done
     done
 ) &
 
+# Khởi động Trạm đo Oscilloscope & Telemetry Web (Cổng 8088)
+OSC_SERVER="$SCRIPT_DIR/tools/web_oscilloscope/server.py"
+if [ -f "$OSC_SERVER" ]; then
+    pkill -f "web_oscilloscope/server.py" 2>/dev/null || true
+    python3 "$OSC_SERVER" --port 8088 &>/dev/null &
+    OSC_PID=$!
+    echo -e "${GREEN}  ✓ Web Oscilloscope: http://localhost:8088${NC}"
+    if command -v powershell.exe &>/dev/null; then
+        powershell.exe -NoProfile -Command "Start-Process 'http://localhost:8088'" 2>/dev/null || true
+    fi
+fi
+
 # === BƯỚC 5: KHỞI ĐỘNG HITL BRIDGE ===
 echo -e "\n${BOLD}[5/5] Khởi động HITL Bridge...${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BOLD}  📊 TRẠM ĐO SÓNG OSCILLOSCOPE (REALTIME):${NC}"
+echo -e "    ${GREEN}✓ Mở trình duyệt Web tại: http://localhost:8088${NC}"
+echo -e "    • Nút Space / Freeze: Dừng dạng sóng để đo đạc soi độ vọt lố"
+echo -e "    • Nút CSV / Snapshot: Xuất dữ liệu đo và ảnh sóng"
+echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
 echo -e "${BOLD}  🎮 ĐIỀU KHIỂN XBOX 360:${NC}"
 echo -e "    Y = Cất cánh  │  A = Hạ cánh  │  BACK = Phanh khẩn"
 echo -e "    Stick trái ↕ = Độ cao  │  Stick trái ↔ = Xoay Yaw (Hướng)"

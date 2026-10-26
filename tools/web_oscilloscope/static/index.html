@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Drone HITL Digital Oscilloscope & Telemetry Station</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+  <!-- Top Application Header -->
+  <header class="app-header">
+    <div class="brand-section">
+      <div class="logo-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">DRONE HITL OSCILLOSCOPE</div>
+        <div class="brand-subtitle">ESP32 Hardware-In-The-Loop Signal Analyzer</div>
+      </div>
+    </div>
+
+    <!-- Live Telemetry Status Badges -->
+    <div class="status-ribbon">
+      <div class="badge-item" id="badge-conn">
+        <span class="status-dot pulsing"></span>
+        <span class="badge-label">STREAM:</span>
+        <span class="badge-val" id="val-stream">CONNECTING</span>
+      </div>
+      <div class="badge-item" id="badge-arm">
+        <span class="status-dot" id="dot-arm"></span>
+        <span class="badge-label">STATE:</span>
+        <span class="badge-val" id="val-arm">STANDBY</span>
+      </div>
+      <div class="badge-item">
+        <span class="badge-label">FREQ:</span>
+        <span class="badge-val" id="val-freq">0 Hz</span>
+      </div>
+      <div class="badge-item">
+        <span class="badge-label">TX/RX:</span>
+        <span class="badge-val" id="val-txrx">0 / 0</span>
+      </div>
+    </div>
+
+    <!-- Oscilloscope Master Controls -->
+    <div class="header-actions">
+      <button class="btn btn-primary" id="btn-freeze" title="Tạm dừng / Đóng băng dạng sóng để đo (Phím tắt: Space)">
+        <span class="btn-icon" id="freeze-icon">⏸</span>
+        <span id="freeze-text">FREEZE (PAUSE)</span>
+      </button>
+      <button class="btn btn-secondary" id="btn-clear" title="Xóa lịch sử sóng">
+        <span class="btn-icon">↺</span> CLEAR
+      </button>
+      <button class="btn btn-secondary" id="btn-export-csv" title="Xuất toàn bộ dữ liệu đo ra file CSV">
+        <span class="btn-icon">📥</span> CSV
+      </button>
+      <button class="btn btn-secondary" id="btn-screenshot" title="Chụp ảnh đồ thị Oscilloscope">
+        <span class="btn-icon">📷</span> SNAPSHOT
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Grid Workspace -->
+  <main class="main-workspace">
+    
+    <!-- Left / Center: Oscilloscope Screen & Toolbar -->
+    <section class="scope-panel">
+      
+      <!-- Scope Top Subbar: Timebase, Mode, Graticule Info -->
+      <div class="scope-toolbar">
+        <div class="toolbar-group">
+          <span class="tb-label">TIMEBASE:</span>
+          <div class="pill-group" id="timebase-pills">
+            <button class="pill" data-tb="1">1s</button>
+            <button class="pill" data-tb="2">2s</button>
+            <button class="pill active" data-tb="5">5s</button>
+            <button class="pill" data-tb="10">10s</button>
+            <button class="pill" data-tb="20">20s</button>
+          </div>
+        </div>
+
+        <div class="toolbar-group">
+          <span class="tb-label">VIEW MODE:</span>
+          <div class="pill-group" id="viewmode-pills">
+            <button class="pill active" data-mode="quad">4-SCOPE GRID</button>
+            <button class="pill" data-mode="single">SINGLE OVERLAY</button>
+          </div>
+        </div>
+
+        <div class="toolbar-group">
+          <span class="tb-label">TRIGGER:</span>
+          <select id="sel-trigger-mode" class="select-pill">
+            <option value="auto">AUTO</option>
+            <option value="norm">NORMAL</option>
+            <option value="freeze_step">STEP JUMP</option>
+          </select>
+        </div>
+
+        <div class="cursor-readout" id="cursor-readout">
+          <span class="cursor-indicator">CURSOR:</span> <span id="cursor-val">Hover mouse on waveform to inspect</span>
+        </div>
+      </div>
+
+      <!-- Canvas Display Area (Quad or Single view) -->
+      <div class="canvas-viewport-container" id="viewport-container">
+        <!-- Rendered dynamically by app.js -->
+        <canvas id="scopeCanvas"></canvas>
+      </div>
+
+      <!-- Scope Bottom Channel Bar: Toggle & Value Readouts -->
+      <div class="channels-strip">
+        <!-- CH1: Roll -->
+        <div class="channel-card ch-roll active" data-ch="roll">
+          <div class="ch-header">
+            <label class="ch-check">
+              <input type="checkbox" id="chk-ch1" checked>
+              <span class="custom-check ch1-color"></span>
+              <span class="ch-name">CH1: ROLL (φ)</span>
+            </label>
+            <span class="ch-badge">Actual vs Target</span>
+          </div>
+          <div class="ch-values">
+            <div class="val-box"><span class="k">Act:</span> <span class="v" id="ch1-act">0.0°</span></div>
+            <div class="val-box"><span class="k">Tgt:</span> <span class="v" id="ch1-tgt">0.0°</span></div>
+            <div class="val-box"><span class="k">Err:</span> <span class="v highlight" id="ch1-err">0.0°</span></div>
+          </div>
+        </div>
+
+        <!-- CH2: Pitch -->
+        <div class="channel-card ch-pitch active" data-ch="pitch">
+          <div class="ch-header">
+            <label class="ch-check">
+              <input type="checkbox" id="chk-ch2" checked>
+              <span class="custom-check ch2-color"></span>
+              <span class="ch-name">CH2: PITCH (θ)</span>
+            </label>
+            <span class="ch-badge">Actual vs Target</span>
+          </div>
+          <div class="ch-values">
+            <div class="val-box"><span class="k">Act:</span> <span class="v" id="ch2-act">0.0°</span></div>
+            <div class="val-box"><span class="k">Tgt:</span> <span class="v" id="ch2-tgt">0.0°</span></div>
+            <div class="val-box"><span class="k">Err:</span> <span class="v highlight" id="ch2-err">0.0°</span></div>
+          </div>
+        </div>
+
+        <!-- CH3: Altitude -->
+        <div class="channel-card ch-alt active" data-ch="alt">
+          <div class="ch-header">
+            <label class="ch-check">
+              <input type="checkbox" id="chk-ch3" checked>
+              <span class="custom-check ch3-color"></span>
+              <span class="ch-name">CH3: ALTITUDE (Z)</span>
+            </label>
+            <span class="ch-badge">Z & Vz</span>
+          </div>
+          <div class="ch-values">
+            <div class="val-box"><span class="k">Alt:</span> <span class="v" id="ch3-alt">0.00m</span></div>
+            <div class="val-box"><span class="k">Tgt:</span> <span class="v" id="ch3-tgt">2.00m</span></div>
+            <div class="val-box"><span class="k">Vz:</span> <span class="v highlight" id="ch3-vz">0.00 m/s</span></div>
+          </div>
+        </div>
+
+        <!-- CH4: Motors -->
+        <div class="channel-card ch-motors active" data-ch="motors">
+          <div class="ch-header">
+            <label class="ch-check">
+              <input type="checkbox" id="chk-ch4" checked>
+              <span class="custom-check ch4-color"></span>
+              <span class="ch-name">CH4: 4x MOTORS</span>
+            </label>
+            <span class="ch-badge">ω0 .. ω3</span>
+          </div>
+          <div class="ch-values motors-compact">
+            <div class="val-box"><span class="k">M0:</span> <span class="v" id="ch4-m0">0</span></div>
+            <div class="val-box"><span class="k">M1:</span> <span class="v" id="ch4-m1">0</span></div>
+            <div class="val-box"><span class="k">M2:</span> <span class="v" id="ch4-m2">0</span></div>
+            <div class="val-box"><span class="k">M3:</span> <span class="v" id="ch4-m3">0</span></div>
+          </div>
+        </div>
+
+        <!-- CH5: Angular Rates -->
+        <div class="channel-card ch-rates" data-ch="rates">
+          <div class="ch-header">
+            <label class="ch-check">
+              <input type="checkbox" id="chk-ch5">
+              <span class="custom-check ch5-color"></span>
+              <span class="ch-name">CH5: GYRO RATES</span>
+            </label>
+            <span class="ch-badge">p, q, r</span>
+          </div>
+          <div class="ch-values">
+            <div class="val-box"><span class="k">p:</span> <span class="v" id="ch5-p">0°/s</span></div>
+            <div class="val-box"><span class="k">q:</span> <span class="v" id="ch5-q">0°/s</span></div>
+            <div class="val-box"><span class="k">r:</span> <span class="v" id="ch5-r">0°/s</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Sidebar: Artificial Horizon, Motor Gauges & Dynamic Measurements -->
+    <aside class="telemetry-sidebar">
+      
+      <!-- Widget 1: Artificial Horizon (Attitude Indicator) -->
+      <div class="widget-card">
+        <div class="widget-header">
+          <span class="widget-title">ARTIFICIAL HORIZON</span>
+          <span class="widget-sub">PFD 3D ATTITUDE</span>
+        </div>
+        <div class="horizon-wrapper">
+          <canvas id="horizonCanvas" width="220" height="220"></canvas>
+          <div class="horizon-overlay-info">
+            <span id="hz-roll-disp">R: 0.0°</span> | <span id="hz-pitch-disp">P: 0.0°</span> | <span id="hz-yaw-disp">Y: 0.0°</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Widget 2: 4-Motor Thrust & Balance Gauge -->
+      <div class="widget-card">
+        <div class="widget-header">
+          <span class="widget-title">MOTOR ACTUATORS (RAD/S)</span>
+          <span class="widget-sub">MAX: 1000 RAD/S</span>
+        </div>
+        <div class="motors-grid">
+          <div class="motor-unit" id="mu-0">
+            <div class="mu-label">M0 (FR-CCW)</div>
+            <div class="mu-bar-track"><div class="mu-bar-fill" id="mbar-0" style="height: 0%"></div></div>
+            <div class="mu-val" id="mval-0">0</div>
+          </div>
+          <div class="motor-unit" id="mu-2">
+            <div class="mu-label">M2 (FL-CW)</div>
+            <div class="mu-bar-track"><div class="mu-bar-fill" id="mbar-2" style="height: 0%"></div></div>
+            <div class="mu-val" id="mval-2">0</div>
+          </div>
+          <div class="motor-unit" id="mu-3">
+            <div class="mu-label">M3 (RR-CW)</div>
+            <div class="mu-bar-track"><div class="mu-bar-fill" id="mbar-3" style="height: 0%"></div></div>
+            <div class="mu-val" id="mval-3">0</div>
+          </div>
+          <div class="motor-unit" id="mu-1">
+            <div class="mu-label">M1 (RL-CCW)</div>
+            <div class="mu-bar-track"><div class="mu-bar-fill" id="mbar-1" style="height: 0%"></div></div>
+            <div class="mu-val" id="mval-1">0</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Widget 3: Live Signal Analysis & DMM Metrics -->
+      <div class="widget-card">
+        <div class="widget-header">
+          <span class="widget-title">SIGNAL METRICS (DMM)</span>
+          <span class="widget-sub">REALTIME STATISTICS</span>
+        </div>
+        <div class="metrics-list">
+          <div class="metric-row">
+            <span class="m-key">Roll Peak-to-Peak (Vpp):</span>
+            <span class="m-val ch1-text" id="m-roll-vpp">0.0°</span>
+          </div>
+          <div class="metric-row">
+            <span class="m-key">Pitch Peak-to-Peak (Vpp):</span>
+            <span class="m-val ch2-text" id="m-pitch-vpp">0.0°</span>
+          </div>
+          <div class="metric-row">
+            <span class="m-key">Max Altitude (Z max):</span>
+            <span class="m-val ch3-text" id="m-z-max">0.00 m</span>
+          </div>
+          <div class="metric-row">
+            <span class="m-key">Max Climb Rate (Vz max):</span>
+            <span class="m-val" id="m-vz-max">0.00 m/s</span>
+          </div>
+          <div class="metric-row">
+            <span class="m-key">Motor Differential (Δω):</span>
+            <span class="m-val" id="m-mot-diff">0 rad/s</span>
+          </div>
+          <div class="metric-row">
+            <span class="m-key">Flight Duration:</span>
+            <span class="m-val highlight" id="m-flight-time">00:00.0</span>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

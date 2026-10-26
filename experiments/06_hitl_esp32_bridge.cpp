@@ -578,6 +578,14 @@ int main(int argc, char** argv) {
     uint32_t total_udp_packets = 0;
     auto last_xbox_pkt_time = std::chrono::steady_clock::now() - std::chrono::seconds(5);
 
+    // Socket UDP phát Telemetry sang Web Oscilloscope (cổng 9098)
+    int osc_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in osc_addr;
+    memset(&osc_addr, 0, sizeof(osc_addr));
+    osc_addr.sin_family = AF_INET;
+    osc_addr.sin_port = htons(9098);
+    inet_pton(AF_INET, "127.0.0.1", &osc_addr.sin_addr);
+
     // Bộ đệm nhận UART từ ESP32
     std::vector<uint8_t> rx_buffer;
     rx_buffer.reserve(256);
@@ -586,9 +594,14 @@ int main(int argc, char** argv) {
     uint32_t rx_packets = 0;
     float last_esp_pitch = 0.0f;
     float last_esp_roll = 0.0f;
+    float last_motor_w0 = 0.0f;
+    float last_motor_w1 = 0.0f;
+    float last_motor_w2 = 0.0f;
+    float last_motor_w3 = 0.0f;
 
     auto loop_start = std::chrono::steady_clock::now();
     auto last_hud_time = std::chrono::steady_clock::now();
+    auto last_osc_broadcast_time = std::chrono::steady_clock::now();
 
     while (running) {
         auto now = std::chrono::steady_clock::now();
@@ -1039,6 +1052,9 @@ int main(int argc, char** argv) {
                         motor_pub.Publish(motor_msg);
                         motor_pub_alt.Publish(motor_msg);
                         last_motor_w0 = in_pkt.w0;
+                        last_motor_w1 = in_pkt.w1;
+                        last_motor_w2 = in_pkt.w2;
+                        last_motor_w3 = in_pkt.w3;
                     }
 
                     rx_packets++;
@@ -1220,19 +1236,43 @@ int main(int argc, char** argv) {
             log_event("PERIODIC_STAT", stat);
         }
 
-        // 5. In thông tin HUD giám sát (30Hz)
+        // 5. Xác định trạng thái bay
+        std::string status_str;
+        if (flip_phase != PHASE_IDLE) {
+            status_str = "🌀 FLIP 360°...";
+        } else if (!is_armed) {
+            status_str = "DISARMED (Bấm Y/Q để bay)";
+        } else if (req_land) {
+            status_str = "HẠ CÁNH...";
+        } else {
+            status_str = "ĐANG BAY";
+        }
+
+        // 5a. Phát Telemetry JSON sang Web Oscilloscope (50Hz = 20ms)
+        if (osc_sock >= 0 && std::chrono::duration<double>(now - last_osc_broadcast_time).count() >= 0.020) {
+            last_osc_broadcast_time = now;
+            double sim_time = std::chrono::duration<double>(now - loop_start).count();
+            char json_buf[512];
+            int n = snprintf(json_buf, sizeof(json_buf),
+                "{\"t\":%.3f,\"r\":%.2f,\"p\":%.2f,\"y\":%.2f,"
+                "\"tr\":%.2f,\"tp\":%.2f,\"z\":%.3f,\"tz\":2.00,\"vz\":%.2f,\"vx\":%.2f,\"vy\":%.2f,"
+                "\"w\":[%.1f,%.1f,%.1f,%.1f],\"rates\":[%.2f,%.2f,%.2f],"
+                "\"arm\":%d,\"land\":%d,\"status\":\"%s\",\"tx\":%u,\"rx\":%u}",
+                sim_time,
+                DroneMath::rad2deg(g_roll), DroneMath::rad2deg(g_pitch), DroneMath::rad2deg(g_yaw),
+                last_esp_roll, last_esp_pitch,
+                g_pos_z, g_vz, g_vx, g_vy,
+                last_motor_w0, last_motor_w1, last_motor_w2, last_motor_w3,
+                DroneMath::rad2deg(g_p), DroneMath::rad2deg(g_q), DroneMath::rad2deg(g_r),
+                is_armed ? 1 : 0, req_land ? 1 : 0, status_str.c_str(), tx_packets, rx_packets);
+            if (n > 0 && n < (int)sizeof(json_buf)) {
+                sendto(osc_sock, json_buf, n, 0, (struct sockaddr*)&osc_addr, sizeof(osc_addr));
+            }
+        }
+
+        // 5b. In thông tin HUD giám sát terminal (30Hz)
         if (std::chrono::duration<double>(now - last_hud_time).count() >= 0.033) {
             last_hud_time = now;
-            std::string status_str;
-            if (flip_phase != PHASE_IDLE) {
-                status_str = "🌀 FLIP 360°...";
-            } else if (!is_armed) {
-                status_str = "DISARMED (Bấm Y/Q để bay)";
-            } else if (req_land) {
-                status_str = "HẠ CÁNH...";
-            } else {
-                status_str = "ĐANG BAY";
-            }
 
             std::string pad_status;
             if (xbox_connected) {
@@ -1267,6 +1307,7 @@ int main(int argc, char** argv) {
 
     close(serial_fd);
     if (udp_sock >= 0) close(udp_sock);
+    if (osc_sock >= 0) close(osc_sock);
     system("powershell.exe -NoProfile -Command \"Stop-Process -Name 'XboxBridge' -ErrorAction SilentlyContinue\" 2>/dev/null || pkill -f xbox_controller_bridge.exe 2>/dev/null || true");
 
     log_event("SHUTDOWN", "Dừng cầu nối HITL an toàn.");

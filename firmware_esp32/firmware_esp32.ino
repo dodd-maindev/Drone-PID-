@@ -19,75 +19,18 @@
 #include <array>
 
 #include "flight_config.h"
+#include "telemetry_packet.hpp"
+#include "math_utils.hpp"
+#include "mavlink_telemetry.hpp"
 
 using namespace FlightConfig;
+using namespace DroneComm;
+
+static MavlinkTelemetry g_mavlink;
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-
-// ============================================================================
-// 1. ĐỊNH NGHĨA GÓI TIN NHỊ PHÂN (TELEMETRY PACKET)
-// ============================================================================
-#pragma pack(push, 1)
-
-enum ControlFlagBits : uint8_t {
-    CTRL_FLAG_ARMED       = 1 << 0,
-    CTRL_FLAG_DRIVING_X   = 1 << 1,
-    CTRL_FLAG_DRIVING_Y   = 1 << 2,
-    CTRL_FLAG_ALT_ACTIVE  = 1 << 3,
-    CTRL_FLAG_EMERGENCY   = 1 << 4,
-    CTRL_FLAG_TAKEOFF     = 1 << 5,
-    CTRL_FLAG_LAND        = 1 << 6
-};
-
-struct SensorPacket {
-    uint8_t header[2];      // 0xAA, 0x55
-    float x, y, z;          // Vị trí (m)
-    float vx, vy, vz;       // Vận tốc (m/s)
-    float roll, pitch, yaw; // Góc Euler (rad)
-    float p, q, r;          // Vận tốc góc (rad/s)
-    float cmd_vx;           // Lệnh vận tốc X (m/s)
-    float cmd_vy;           // Lệnh vận tốc Y (m/s)
-    float cmd_alt_vel;      // Lệnh leo/hạ Z (m/s)
-    float cmd_yaw_rate;     // Lệnh xoay Yaw (rad/s)
-    uint8_t flags;          // Cờ điều khiển
-    uint8_t checksum;       // Mã kiểm lỗi XOR
-};
-
-struct ActuatorPacket {
-    uint8_t header[2];      // 0x55, 0xAA
-    float w0, w1, w2, w3;   // Tốc độ 4 cánh quạt (rad/s)
-    float target_pitch_deg; // Góc Pitch mục tiêu
-    float target_roll_deg;  // Góc Roll mục tiêu
-    uint8_t status_flags;   // Cờ trạng thái (Bit 0: Armed, Bit 1: Braking, Bit 2: Hover)
-    uint8_t checksum;       // Mã kiểm lỗi XOR
-};
-
-#pragma pack(pop)
-
-inline uint8_t compute_packet_checksum(const uint8_t* data, size_t len) {
-    uint8_t cs = 0;
-    for (size_t i = 0; i < len; ++i) cs ^= data[i];
-    return cs;
-}
-
-// ============================================================================
-// 2. TOÁN HỌC HÀNG KHÔNG (MATH UTILS)
-// ============================================================================
-namespace DroneMath {
-    inline float normalize_angle(float angle) {
-        while (angle > M_PI) angle -= 2.0f * M_PI;
-        while (angle < -M_PI) angle += 2.0f * M_PI;
-        return angle;
-    }
-    inline float deg2rad(float deg) { return deg * static_cast<float>(M_PI / 180.0); }
-    inline float rad2deg(float rad) { return rad * static_cast<float>(180.0 / M_PI); }
-    template<typename T>
-    inline T clamp(T val, T min_val, T max_val) {
-        return std::max(min_val, std::min(val, max_val));
-    }
-}
 
 // ============================================================================
 // 3. BỘ ĐIỀU KHIỂN PID CƠ BẢN (PID CONTROLLER)
@@ -546,6 +489,13 @@ void setup() {
     Serial.begin(Hardware::UART_BAUD_RATE);
     while (!Serial && millis() < 2000);
 
+    // Khởi tạo WiFi SoftAP & MAVLink Telemetry UDP 14550 cho QGroundControl
+    if (FlightConfig::GCS::ENABLE_WIFI_MAVLINK) {
+        g_mavlink.init(FlightConfig::GCS::WIFI_SSID,
+                       FlightConfig::GCS::WIFI_PASSWORD,
+                       FlightConfig::GCS::UDP_PORT);
+    }
+
 #if CONFIG_FREERTOS_UNICORE || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2)
     xTaskCreate(
         flight_control_task,
@@ -612,6 +562,40 @@ void loop() {
                 memmove(rx_buf, rx_buf + 1, rx_len - 1);
                 rx_len--;
             }
+        }
+    }
+
+    // Cập nhật MAVLink GCS Telemetry cho QGroundControl (Core 0, 50Hz)
+    static uint32_t last_gcs_update_ms = 0;
+    uint32_t now_ms = millis();
+    if (now_ms - last_gcs_update_ms >= 20) {
+        last_gcs_update_ms = now_ms;
+
+        SensorPacket s_copy;
+        portENTER_CRITICAL(&g_data_mutex);
+        s_copy = g_sensor_data;
+        portEXIT_CRITICAL(&g_data_mutex);
+
+        bool qgc_arm = false;
+        bool qgc_disarm = false;
+        bool qgc_takeoff = false;
+        bool qgc_land = false;
+
+        g_mavlink.update(s_copy, g_is_armed, g_target_alt,
+                         qgc_arm, qgc_disarm, qgc_takeoff, qgc_land);
+
+        if (qgc_arm) {
+            g_is_armed = true;
+        }
+        if (qgc_disarm) {
+            g_is_armed = false;
+        }
+        if (qgc_takeoff) {
+            g_is_armed = true;
+            g_target_alt = FlightLogic::TAKEOFF_TARGET_ALT_M;
+        }
+        if (qgc_land) {
+            g_target_alt = 0.05f;
         }
     }
 }

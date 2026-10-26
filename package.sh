@@ -76,6 +76,21 @@ if [ -d "$SRC_DIR/simulation/audio" ]; then
     echo -e "${GREEN}  ✓ Audio: simulation/audio/ (start.mp3, continue.mp3)${NC}"
 fi
 
+# Web Oscilloscope & Telemetry Lab
+if [ -d "$SRC_DIR/tools/web_oscilloscope" ]; then
+    mkdir -p "$PKG_DIR/tools"
+    cp -r "$SRC_DIR/tools/web_oscilloscope" "$PKG_DIR/tools/"
+    echo -e "${GREEN}  ✓ Web Oscilloscope: tools/web_oscilloscope/${NC}"
+fi
+
+# Firmware ESP32 (Đầy đủ mã nguồn và thư viện nạp ESP32)
+if [ -d "$SRC_DIR/firmware_esp32" ]; then
+    mkdir -p "$PKG_DIR/firmware_esp32"
+    cp -r "$SRC_DIR/firmware_esp32"/* "$PKG_DIR/firmware_esp32/" 2>/dev/null || true
+    rm -rf "$PKG_DIR/firmware_esp32/.pio" 2>/dev/null || true
+    echo -e "${GREEN}  ✓ Firmware ESP32: firmware_esp32/${NC}"
+fi
+
 # === 4. Tạo launcher script ===
 echo -e "\n${BOLD}[4/4] Tạo launcher...${NC}"
 
@@ -97,14 +112,23 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 GAZEBO_PID=""
+GUI_PID=""
+OSC_PID=""
 
 cleanup() {
     echo ""
     echo -e "${YELLOW}[*] Đang tắt tất cả...${NC}"
+    if [ -n "$GUI_PID" ] && kill -0 "$GUI_PID" 2>/dev/null; then
+        kill "$GUI_PID" 2>/dev/null
+    fi
     if [ -n "$GAZEBO_PID" ] && kill -0 "$GAZEBO_PID" 2>/dev/null; then
         kill "$GAZEBO_PID" 2>/dev/null
         wait "$GAZEBO_PID" 2>/dev/null || true
     fi
+    if [ -n "$OSC_PID" ] && kill -0 "$OSC_PID" 2>/dev/null; then
+        kill "$OSC_PID" 2>/dev/null
+    fi
+    pkill -f "web_oscilloscope/server.py" 2>/dev/null || true
     pkill -f xbox_controller_bridge.exe 2>/dev/null || true
     powershell.exe -NoProfile -Command "Stop-Process -Name 'XboxBridge' -ErrorAction SilentlyContinue; Stop-Process -Name 'xbox_controller_bridge' -ErrorAction SilentlyContinue" 2>/dev/null || true
     echo -e "${GREEN}[✓] Đã tắt. Hẹn gặp lại!${NC}"
@@ -261,39 +285,66 @@ export GZ_SIM_RESOURCE_PATH="$SCRIPT_DIR/simulation/models:${HOME}/.gz/models"
 
 # === TỰ ĐỘNG PHÁT HIỆN GPU ===
 GPU_INFO=""
-if [ -d "/usr/lib/wsl" ] || grep -qi microsoft /proc/version 2>/dev/null; then
-    # WSL2: dùng Direct3D 12 passthrough
+D3D12_OK=false
+
+# Kiểm tra GPU Passthrough D3D12 trên WSL2 (chỉ kích hoạt nếu phần cứng và thư viện thực sự hoạt động)
+if grep -qi microsoft /proc/version 2>/dev/null && ([ -d "/usr/lib/wsl/lib" ] || [ -d "/dev/dri" ]); then
     sudo chmod 666 /dev/dri/* 2>/dev/null || true
-    export GALLIUM_DRIVER=d3d12
-    export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
-    
-    if nvidia-smi &>/dev/null; then
-        export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
-        NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
-        GPU_INFO="WSL2 D3D12 GPU Passthrough ($NV_NAME)"
-    else
-        export MESA_D3D12_DEFAULT_ADAPTER_NAME=""
-        GPU_INFO="WSL2 D3D12 GPU Passthrough"
+    # Kiểm tra xem D3D12 có tạo được OpenGL context thực tế không (tránh crash Qt)
+    if command -v glxinfo &>/dev/null && GALLIUM_DRIVER=d3d12 LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH" glxinfo -B &>/dev/null; then
+        export GALLIUM_DRIVER=d3d12
+        export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
+        export QT_QPA_PLATFORM=xcb
+        export LIBGL_DRI3_DISABLE=1
+        D3D12_OK=true
+        if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+            export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+            NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
+            GPU_INFO="WSL2 D3D12 GPU Passthrough ($NV_NAME)"
+        else
+            GPU_INFO="WSL2 D3D12 GPU Passthrough"
+        fi
+        echo -e "${GREEN}[✓] GPU: $GPU_INFO (Tăng tốc phần cứng D3D12)${NC}"
     fi
-    echo -e "${GREEN}[✓] GPU: $GPU_INFO (Tăng tốc phần cứng D3D12)${NC}"
-elif command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
-    NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
-    GPU_INFO="NVIDIA Native ($NV_NAME)"
-    echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
-elif lspci 2>/dev/null | grep -qi "AMD.*VGA\|Radeon"; then
-    GPU_INFO="AMD $(lspci 2>/dev/null | grep -i 'vga\|3d' | grep -i amd | head -1 | sed 's/.*: //')"
-    echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
-elif lspci 2>/dev/null | grep -qi "Intel.*VGA\|Intel.*Graphics"; then
-    GPU_INFO="Intel $(lspci 2>/dev/null | grep -i 'vga\|3d' | grep -i intel | head -1 | sed 's/.*: //')"
-    echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
-else
-    GPU_INFO="CPU Software Rendering"
-    export LIBGL_ALWAYS_SOFTWARE=1
-    echo -e "${YELLOW}[⚠] Không tìm thấy GPU — dùng CPU rendering (chậm)${NC}"
 fi
 
-gz sim -r "$WORLD_SDF" &
-GAZEBO_PID=$!
+if [ "$D3D12_OK" = false ]; then
+    unset GALLIUM_DRIVER
+    unset MESA_D3D12_DEFAULT_ADAPTER_NAME
+    
+    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+        NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
+        GPU_INFO="NVIDIA Native ($NV_NAME)"
+        echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
+    elif lspci 2>/dev/null | grep -qi "AMD.*VGA\|Radeon"; then
+        GPU_INFO="AMD $(lspci 2>/dev/null | grep -i 'vga\|3d' | grep -i amd | head -1 | sed 's/.*: //')"
+        echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
+    elif lspci 2>/dev/null | grep -qi "Intel.*VGA\|Intel.*Graphics"; then
+        GPU_INFO="Intel $(lspci 2>/dev/null | grep -i 'vga\|3d' | grep -i intel | head -1 | sed 's/.*: //')"
+        echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
+    else
+        GPU_INFO="Mesa Software Rendering (llvmpipe)"
+        export LIBGL_ALWAYS_SOFTWARE=1
+        echo -e "${YELLOW}[ℹ] D3D12 passthrough không khả dụng — dùng $GPU_INFO${NC}"
+    fi
+fi
+
+# Ép gz-transport chạy trên loopback 127.0.0.1 (ngăn rớt gói dynamic_pose trên mạng ảo WSL2)
+export GZ_IP=127.0.0.1
+export GZ_PARTITION="drone_hitl"
+
+if [ "$1" = "--split" ]; then
+    echo -e "${YELLOW}[*] Khởi động Gazebo Server (Headless)...${NC}"
+    gz sim -s -r "$WORLD_SDF" &
+    GAZEBO_PID=$!
+    sleep 2
+    echo -e "${YELLOW}[*] Khởi động Gazebo GUI riêng biệt...${NC}"
+    gz sim -g &
+    GUI_PID=$!
+else
+    gz sim -r "$WORLD_SDF" &
+    GAZEBO_PID=$!
+fi
 
 # Chờ Gazebo sẵn sàng
 for i in $(seq 1 30); do
@@ -311,8 +362,28 @@ echo -e "${GREEN}[✓] Gazebo đã sẵn sàng!${NC}"
     done
 ) &
 
+# Khởi động Trạm đo Oscilloscope & Telemetry Web (Cổng 8088)
+OSC_SERVER="$SCRIPT_DIR/tools/web_oscilloscope/server.py"
+[ ! -f "$OSC_SERVER" ] && OSC_SERVER="$SCRIPT_DIR/../tools/web_oscilloscope/server.py"
+
+if [ -f "$OSC_SERVER" ]; then
+    pkill -f "web_oscilloscope/server.py" 2>/dev/null || true
+    python3 "$OSC_SERVER" --port 8088 &>/dev/null &
+    OSC_PID=$!
+    echo -e "${GREEN}[✓] Trạm đo Oscilloscope & Telemetry Web đã sẵn sàng: http://localhost:8088${NC}"
+    # Tự động mở trình duyệt trên Windows
+    if command -v powershell.exe &>/dev/null; then
+        powershell.exe -NoProfile -Command "Start-Process 'http://localhost:8088'" 2>/dev/null || true
+    fi
+fi
+
 # Hiển thị hướng dẫn
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BOLD}  📊 TRẠM ĐO SÓNG OSCILLOSCOPE & TELEMETRY (REALTIME):${NC}"
+echo -e "    ${GREEN}✓ Trình duyệt Web (Chrome / Edge): http://localhost:8088${NC}"
+echo -e "    • Phím Space: FREEZE / Dừng dạng sóng để đo đạc soi độ vọt lố PID"
+echo -e "    • Nút CSV / Snapshot: Xuất dữ liệu đo và ảnh sóng cho báo cáo"
+echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
 echo -e "${BOLD}  🎮 ĐIỀU KHIỂN TAY CẦM XBOX 360:${NC}"
 echo -e "    ${GREEN}✓ Tay cầm cắm vào Windows (tự động kết nối, KHÔNG CẦN usbipd)${NC}"
 echo -e "    Y = Cất cánh lên 2.0m  │  A = Hạ cánh an toàn  │  BACK = Phanh khẩn"

@@ -12,6 +12,7 @@
 
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 
 namespace FlightConfig {
 
@@ -203,5 +204,30 @@ namespace FlightConfig {
 
         // Ngưỡng lực nâng tối thiểu để bắt đầu quay cánh quạt (tránh quay khi đang disarm)
         constexpr float MIN_THRUST_THRESHOLD     = 0.02f;
+    }
+
+    // =====================================================================================
+    // 8. CẤU HÌNH TRẠM MẶT ĐẤT QGROUNDCONTROL (MAVLINK GCS TELEMETRY)
+    // =====================================================================================
+    namespace GCS {
+        // Bật / Tắt module phát sóng WiFi MAVLink kết nối QGroundControl
+        constexpr bool        ENABLE_WIFI_MAVLINK    = true;
+
+        // Tên mạng WiFi do ESP32 tự phát (SoftAP) và mật khẩu (tối thiểu 8 ký tự)
+        constexpr const char* WIFI_SSID              = "ESP32_DRONE_GCS";
+        constexpr const char* WIFI_PASSWORD          = "12345678";
+
+        // Cổng mạng UDP chuẩn của QGroundControl
+        constexpr uint16_t    UDP_PORT               = 14550;
+
+        // Định danh MAVLink cho máy bay (System ID = 1, Component ID = 1)
+        constexpr uint8_t     SYSTEM_ID              = 1;
+        constexpr uint8_t     COMPONENT_ID           = 1;
+
+        // Chu kỳ phát các gói tin Telemetry (ms)
+        constexpr uint32_t    HEARTBEAT_PERIOD_MS    = 1000;  // 1 Hz
+        constexpr uint32_t    ATTITUDE_PERIOD_MS     = 33;    // 30 Hz
+        constexpr uint32_t    POSITION_PERIOD_MS     = 100;   // 10 Hz
+        constexpr uint32_t    STATUS_PERIOD_MS       = 1000;  // 1 Hz
     }
 }

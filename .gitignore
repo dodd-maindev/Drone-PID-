@@ -41,3 +41,9 @@ logs/
 .idea/
 *.sublime-project
 *.sublime-workspace
+
+# MAVLink library headers
+**/mavlink/
+firmware_esp32/mavlink/
+firmware_esp32/include/mavlink/
+

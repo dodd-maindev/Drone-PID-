@@ -336,10 +336,14 @@
           </mesh>
         </geometry>
         <material>
-          <script>
-            <name>Gazebo/DarkGrey</name>
-            <uri>file://media/materials/scripts/gazebo.material</uri>
-          </script>
+          <diffuse>0.15 0.15 0.15 1.0</diffuse>
+          <specular>0.8 0.8 0.8 1.0</specular>
+          <pbr>
+            <metal>
+              <roughness>0.3</roughness>
+              <metalness>0.2</metalness>
+            </metal>
+          </pbr>
         </material>
       </visual>
       <visual name="rotor_0_visual_motor_bell">
@@ -408,10 +412,14 @@
           </mesh>
         </geometry>
         <material>
-          <script>
-            <name>Gazebo/DarkGrey</name>
-            <uri>file://media/materials/scripts/gazebo.material</uri>
-          </script>
+          <diffuse>0.15 0.15 0.15 1.0</diffuse>
+          <specular>0.8 0.8 0.8 1.0</specular>
+          <pbr>
+            <metal>
+              <roughness>0.3</roughness>
+              <metalness>0.2</metalness>
+            </metal>
+          </pbr>
         </material>
       </visual>
       <visual name="rotor_1_visual_motor_top">
@@ -480,10 +488,14 @@
           </mesh>
         </geometry>
         <material>
-          <script>
-            <name>Gazebo/DarkGrey</name>
-            <uri>file://media/materials/scripts/gazebo.material</uri>
-          </script>
+          <diffuse>0.15 0.15 0.15 1.0</diffuse>
+          <specular>0.8 0.8 0.8 1.0</specular>
+          <pbr>
+            <metal>
+              <roughness>0.3</roughness>
+              <metalness>0.2</metalness>
+            </metal>
+          </pbr>
         </material>
       </visual>
       <visual name="rotor_2_visual_motor_top">
@@ -552,10 +564,14 @@
           </mesh>
         </geometry>
         <material>
-          <script>
-            <name>Gazebo/DarkGrey</name>
-            <uri>file://media/materials/scripts/gazebo.material</uri>
-          </script>
+          <diffuse>0.15 0.15 0.15 1.0</diffuse>
+          <specular>0.8 0.8 0.8 1.0</specular>
+          <pbr>
+            <metal>
+              <roughness>0.3</roughness>
+              <metalness>0.2</metalness>
+            </metal>
+          </pbr>
         </material>
       </visual>
       <visual name="rotor_3_visual_motor_top">

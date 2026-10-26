@@ -20,14 +20,17 @@
 #include "motor_mixer.hpp"
 #include "altitude_controller.hpp"
 #include "position_controller.hpp"
+#include "mavlink_telemetry.hpp"
 
 using namespace FlightConfig;
 using namespace DroneControllers;
+using namespace DroneComm;
 
-// Khởi tạo tĩnh các Controller (Zero-Heap Allocation)
+// Khởi tạo tĩnh các Controller & MAVLink Telemetry (Zero-Heap Allocation)
 static MotorMixer g_mixer(Mixer::MAX_MOTOR_ROT_VELOCITY);
 static AltitudeController g_alt_controller;
 static PositionController g_pos_controller;
+static MavlinkTelemetry g_mavlink;
 
 // Dữ liệu cảm biến nhận từ PC (Được bảo vệ bằng FreeRTOS portMUX)
 static portMUX_TYPE g_data_mutex = portMUX_INITIALIZER_UNLOCKED;
@@ -199,6 +202,13 @@ void setup() {
     Serial.begin(Hardware::UART_BAUD_RATE);
     while (!Serial && millis() < 2000);
 
+    // Khởi tạo WiFi SoftAP & MAVLink Telemetry UDP 14550 cho QGroundControl
+    if (FlightConfig::GCS::ENABLE_WIFI_MAVLINK) {
+        g_mavlink.init(FlightConfig::GCS::WIFI_SSID,
+                       FlightConfig::GCS::WIFI_PASSWORD,
+                       FlightConfig::GCS::UDP_PORT);
+    }
+
 #if CONFIG_FREERTOS_UNICORE || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2)
     xTaskCreate(
         flight_control_task,
@@ -261,6 +271,40 @@ void loop() {
                 memmove(rx_buf, rx_buf + 1, rx_len - 1);
                 rx_len--;
             }
+        }
+    }
+
+    // Cập nhật MAVLink GCS Telemetry & tiếp nhận lệnh từ QGroundControl (Core 0, 50Hz)
+    static uint32_t last_gcs_update_ms = 0;
+    uint32_t now_ms = millis();
+    if (now_ms - last_gcs_update_ms >= 20) {
+        last_gcs_update_ms = now_ms;
+
+        SensorPacket s_copy;
+        portENTER_CRITICAL(&g_data_mutex);
+        s_copy = g_sensor_data;
+        portEXIT_CRITICAL(&g_data_mutex);
+
+        bool qgc_arm = false;
+        bool qgc_disarm = false;
+        bool qgc_takeoff = false;
+        bool qgc_land = false;
+
+        g_mavlink.update(s_copy, g_is_armed, g_target_alt,
+                         qgc_arm, qgc_disarm, qgc_takeoff, qgc_land);
+
+        if (qgc_arm) {
+            g_is_armed = true;
+        }
+        if (qgc_disarm) {
+            g_is_armed = false;
+        }
+        if (qgc_takeoff) {
+            g_is_armed = true;
+            g_target_alt = FlightLogic::TAKEOFF_TARGET_ALT_M;
+        }
+        if (qgc_land) {
+            g_target_alt = 0.05f;
         }
     }
 }
