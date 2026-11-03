@@ -55,36 +55,39 @@ public:
           was_armed_(false) {}
 
     /**
-     * @brief Khởi tạo mạng WiFi SoftAP và mở cổng UDP 14550
+     * @brief Khởi tạo cổng MAVLink Telemetry UDP 14550 trên mạng Wi-Fi Station (Client)
      */
-    bool init(const char* ssid = FlightConfig::GCS::WIFI_SSID,
-              const char* password = FlightConfig::GCS::WIFI_PASSWORD,
-              uint16_t local_port = FlightConfig::GCS::UDP_PORT) {
-        
+    bool init(uint16_t local_port = FlightConfig::GCS::UDP_PORT) {
         if (!FlightConfig::GCS::ENABLE_WIFI_MAVLINK) {
             return false;
         }
 
-        // Cấu hình SoftAP
-        WiFi.disconnect(true);
-        delay(40);
-        WiFi.mode(WIFI_AP);
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println(F("[MAVLINK] WiFi STA chua ket noi. Chay che do Offline (khong GCS)."));
+            is_initialized_ = false;
+            return false;
+        }
 
-        // Thiết lập IP tĩnh cho AP: 192.168.4.1
-        IPAddress local_ip(192, 168, 4, 1);
-        IPAddress gateway(192, 168, 4, 1);
-        IPAddress subnet(255, 255, 255, 0);
-        WiFi.softAPConfig(local_ip, gateway, subnet);
-
-        bool ap_ok = WiFi.softAP(ssid, password);
-        delay(60);
-
-        // Mặc định địa chỉ phát broadcast đến toàn bộ mạng con
-        remote_ip_ = IPAddress(192, 168, 4, 255);
+        // Tự động tính toán địa chỉ Broadcast theo Subnet Mask mạng nội bộ
+        IPAddress local_ip = WiFi.localIP();
+        IPAddress subnet = WiFi.subnetMask();
+        remote_ip_ = IPAddress((uint32_t)local_ip | ~(uint32_t)subnet);
         remote_port_ = local_port;
 
         bool udp_ok = udp_.begin(local_port);
-        is_initialized_ = ap_ok && udp_ok;
+        is_initialized_ = udp_ok;
+        if (is_initialized_) {
+            Serial.print(F("[MAVLINK] Mo UDP cong "));
+            Serial.print(local_port);
+            Serial.println(F(" thanh cong!"));
+            Serial.print(F("          * IP Drone  : "));
+            Serial.println(local_ip);
+            Serial.print(F("          * Broadcast : "));
+            Serial.println(remote_ip_);
+            Serial.println(F("          * Mo QGroundControl tren PC cung mang WiFi de tu dong ket noi!"));
+        } else {
+            Serial.println(F("[MAVLINK] Khong the mo socket UDP 14550!"));
+        }
         return is_initialized_;
     }
 

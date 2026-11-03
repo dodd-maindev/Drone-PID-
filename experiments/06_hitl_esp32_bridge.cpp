@@ -35,6 +35,8 @@
 #include <gz/msgs/cameratrack.pb.h>
 
 #include "comm/telemetry_packet.hpp"
+#include "comm/mavlink_bridge.hpp"
+#include "core/vehicle_state.hpp"
 #include "math/math_utils.hpp"
 #include "sound/drone_sound.hpp"
 
@@ -143,6 +145,9 @@ int open_serial_port(const std::string& port_name, int baud_rate = B921600) {
         close(fd);
         return -1;
     }
+
+    // Ép cờ O_NONBLOCK để write() và read() không bao giờ block luồng chính
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 
     // Reset ESP32 một cách an toàn và giải phóng khỏi chế độ Bootloader/Reset (DTR/RTS):
     int status = 0;
@@ -360,6 +365,10 @@ static float g_p = 0, g_q = 0, g_r = 0;
 static float g_qw = 1.0f, g_qx = 0.0f, g_qy = 0.0f, g_qz = 0.0f;
 static bool g_odom_connected = false;
 
+// Biến trạng thái toàn cục cho MAVLink Telemetry gửi sang QGroundControl
+static DroneCore::VehicleState g_vehicle_state;
+static DroneComm::MavlinkBridge g_mavlink_bridge;
+
 void on_odometry(const gz::msgs::Odometry& msg) {
     std::lock_guard<std::mutex> lock(g_odom_mutex);
     g_pos_x = msg.pose().position().x();
@@ -381,6 +390,21 @@ void on_odometry(const gz::msgs::Odometry& msg) {
     g_r = msg.twist().angular().z();
 
     g_odom_connected = true;
+
+    // Cập nhật dữ liệu cho MAVLink Bridge (phát UDP sang QGroundControl)
+    g_vehicle_state.pos_x.store(g_pos_x);
+    g_vehicle_state.pos_y.store(g_pos_y);
+    g_vehicle_state.altitude.store(g_pos_z);
+    g_vehicle_state.vx.store(g_vx);
+    g_vehicle_state.vy.store(g_vy);
+    g_vehicle_state.vz.store(g_vz);
+    g_vehicle_state.roll.store(g_roll);
+    g_vehicle_state.pitch.store(g_pitch);
+    g_vehicle_state.yaw.store(g_yaw);
+    g_vehicle_state.p.store(g_p);
+    g_vehicle_state.q.store(g_q);
+    g_vehicle_state.r.store(g_r);
+    g_vehicle_state.is_connected.store(true);
 }
 
 
@@ -523,10 +547,20 @@ int main(int argc, char** argv) {
     DroneSoundManager sound_mgr;
     sound_mgr.init();
 
+    // Khởi động cầu nối MAVLink Telemetry UDP 14550 tới QGroundControl trên Windows
+    g_mavlink_bridge.init(&g_vehicle_state);
+    std::cout << "[✓] Đã kích hoạt MAVLink UDP Gateway (Port 14550 -> QGroundControl)!" << std::endl;
+
     set_nonblocking_terminal(true);
 
     // Trạng thái lệnh người lái
     bool is_armed = false;
+
+    // Đăng ký callback nhận lệnh ARM / DISARM từ QGroundControl
+    g_mavlink_bridge.set_arm_callback([&is_armed](bool arm) {
+        is_armed = arm;
+        std::cout << "\n[📡 QGC] Nhận lệnh từ QGroundControl: " << (arm ? "ARM (MỞ KHÓA)" : "DISARM (KHÓA)") << std::endl;
+    });
     float max_speed_mps = 2.5f;
     float target_vx_cmd = 0.0f;
     float target_vy_cmd = 0.0f;
@@ -1023,8 +1057,8 @@ int main(int argc, char** argv) {
 
         send_pkt.checksum = compute_packet_checksum((uint8_t*)&send_pkt + 2, sizeof(send_pkt) - 3);
 
-        write(serial_fd, (uint8_t*)&send_pkt, sizeof(send_pkt));
-        tx_packets++;
+        ssize_t w_ret = write(serial_fd, (uint8_t*)&send_pkt, sizeof(send_pkt));
+        if (w_ret > 0) tx_packets++;
 
         // 4. Đọc toàn bộ phản hồi ActuatorPacket từ ESP32 có trong bộ đệm Serial
         uint8_t read_buf[256];
@@ -1055,6 +1089,13 @@ int main(int argc, char** argv) {
                         last_motor_w1 = in_pkt.w1;
                         last_motor_w2 = in_pkt.w2;
                         last_motor_w3 = in_pkt.w3;
+
+                        // Đồng bộ trạng thái động cơ cho MAVLink Telemetry
+                        g_vehicle_state.motor_speed_0.store(last_motor_w0);
+                        g_vehicle_state.motor_speed_1.store(last_motor_w1);
+                        g_vehicle_state.motor_speed_2.store(last_motor_w2);
+                        g_vehicle_state.motor_speed_3.store(last_motor_w3);
+                        g_vehicle_state.is_armed.store(is_armed);
                     }
 
                     rx_packets++;
@@ -1283,8 +1324,11 @@ int main(int argc, char** argv) {
                 pad_status = "⌨️ Phím: ON (Chờ Xbox. Bấm Y/Q trên phím để bay)";
             }
 
+            std::string qgc_status = g_mavlink_bridge.is_qgc_connected() ? "📡 QGC: ON" : "📡 QGC: Chờ";
+
             std::cout << "\r[⚡ HITL-ESP32] "
                       << pad_status << " | "
+                      << qgc_status << " | "
                       << "Alt: " << std::fixed << std::setprecision(2) << g_pos_z << "m | "
                       << "Roll: " << std::setw(5) << std::setprecision(1) << DroneMath::rad2deg(g_roll) << "° | "
                       << "Pitch: " << std::setw(5) << DroneMath::rad2deg(g_pitch) << "° | "
@@ -1298,6 +1342,9 @@ int main(int argc, char** argv) {
     }
 
     set_nonblocking_terminal(false);
+
+    // Dừng MAVLink Gateway an toàn
+    g_mavlink_bridge.shutdown();
 
     // Gửi lệnh dừng khẩn cấp trước khi thoát
     gz::msgs::Actuators stop_msg;

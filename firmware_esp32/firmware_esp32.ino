@@ -22,6 +22,9 @@
 #include "telemetry_packet.hpp"
 #include "math_utils.hpp"
 #include "mavlink_telemetry.hpp"
+#include "wifi_credential_storage.h"
+#include "wifi_scanner_service.h"
+#include "wifi_serial_configurator.h" 
 
 using namespace FlightConfig;
 using namespace DroneComm;
@@ -480,6 +483,46 @@ void flight_control_task(void* pvParameters) {
     }
 }
 
+
+// ============================================================================
+// TASK GCS MAVLINK TELEMETRY (FreeRTOS Core 0 / Low Priority Task)
+// Chuyên xử lý truyền nhận MAVLink qua WiFi UDP mà không làm chậm vòng lặp Serial
+// ============================================================================
+void gcs_wifi_task(void *pvParameters) {
+    (void)pvParameters;
+    while (true) {
+        if (WiFi.status() == WL_CONNECTED && g_mavlink.is_initialized()) {
+            SensorPacket s_copy;
+            portENTER_CRITICAL(&g_data_mutex);
+            s_copy = g_sensor_data;
+            portEXIT_CRITICAL(&g_data_mutex);
+
+            bool qgc_arm = false;
+            bool qgc_disarm = false;
+            bool qgc_takeoff = false;
+            bool qgc_land = false;
+
+            g_mavlink.update(s_copy, g_is_armed, g_target_alt,
+                             qgc_arm, qgc_disarm, qgc_takeoff, qgc_land);
+
+            if (qgc_arm) {
+                g_is_armed = true;
+            }
+            if (qgc_disarm) {
+                g_is_armed = false;
+            }
+            if (qgc_takeoff) {
+                g_is_armed = true;
+                g_target_alt = FlightLogic::TAKEOFF_TARGET_ALT_M;
+            }
+            if (qgc_land) {
+                g_target_alt = 0.05f;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20)); // Chu kỳ 50Hz, tự động nhường CPU cho Serial
+    }
+}
+
 void setup() {
     pinMode(Hardware::STATUS_LED_PIN, OUTPUT);
     digitalWrite(Hardware::STATUS_LED_PIN, LOW);
@@ -487,13 +530,91 @@ void setup() {
     // Tăng bộ đệm phần cứng RX lên 2048 bytes để chống tràn khi truyền 100Hz-200Hz
     Serial.setRxBufferSize(Hardware::UART_RX_BUFFER_SIZE);
     Serial.begin(Hardware::UART_BAUD_RATE);
-    while (!Serial && millis() < 2000);
+    while (!Serial && millis() < 1500);
 
-    // Khởi tạo WiFi SoftAP & MAVLink Telemetry UDP 14550 cho QGroundControl
+    Serial.println(F("\n========================================================"));
+    Serial.println(F("       DRONE HITL FLIGHT CONTROLLER - ESP32"));
+    Serial.println(F("========================================================"));
+
+    // Khởi tạo Wi-Fi Station (Client) kết nối vào router mạng nội bộ (như VietQR app)
     if (FlightConfig::GCS::ENABLE_WIFI_MAVLINK) {
-        g_mavlink.init(FlightConfig::GCS::WIFI_SSID,
-                       FlightConfig::GCS::WIFI_PASSWORD,
-                       FlightConfig::GCS::UDP_PORT);
+        WiFi.mode(WIFI_STA);
+        WifiCredentialStorage credStorage;
+        WifiScannerService scanner;
+        bool wifi_connected = false;
+
+        if (credStorage.hasStoredCredentials()) {
+            String saved_ssid = credStorage.getStoredSsid();
+            String saved_pass = credStorage.getStoredPassword();
+            Serial.printf("[WIFI STA] Tim thay mang da luu: '%s'. Dang ket noi...\n", saved_ssid.c_str());
+            Serial.println(F(">> Meo: Go 'c' roi an Enter trong 3s neu muon doi mang khac."));
+
+            uint32_t wait_start = millis();
+            bool user_override = false;
+            while (millis() - wait_start < 3000) {
+                if (Serial.available() > 0) {
+                    char ch = (char)Serial.read();
+                    if (ch == 'c' || ch == 'C') {
+                        user_override = true;
+                        break;
+                    }
+                }
+                delay(20);
+            }
+
+            if (!user_override) {
+                WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
+                uint32_t conn_start = millis();
+                while (WiFi.status() != WL_CONNECTED && (millis() - conn_start < 7000)) {
+                    delay(300);
+                    Serial.print('.');
+                }
+                Serial.println();
+                if (WiFi.status() == WL_CONNECTED) {
+                    wifi_connected = true;
+                    Serial.printf("[WIFI STA] Ket noi thanh cong! IP Drone: %s\n", WiFi.localIP().toString().c_str());
+                } else {
+                    Serial.println(F("[WIFI STA] Ket noi mang cu that bai hoac het thoi gian."));
+                }
+            } else {
+                Serial.println(F("\n[WIFI] Nguoi dung yeu cau cau hinh mang moi!"));
+            }
+        }
+
+        // Nếu chưa lưu mạng hoặc kết nối thất bại: Quét mạng và cho chọn qua Serial
+        if (!wifi_connected) {
+            Serial.println(F("[WIFI] Bat dau quet mang 2.4GHz de cau hinh ket noi..."));
+            String chosenSsid = "";
+            String enteredPass = "";
+            if (WifiSerialConfigurator::promptUserForNetwork(Serial, scanner, chosenSsid, enteredPass, 12000)) {
+                Serial.printf("[WIFI STA] Dang ket noi toi '%s'...\n", chosenSsid.c_str());
+                WiFi.begin(chosenSsid.c_str(), enteredPass.c_str());
+                uint32_t conn_start = millis();
+                while (WiFi.status() != WL_CONNECTED && (millis() - conn_start < 8000)) {
+                    delay(300);
+                    Serial.print('.');
+                }
+                Serial.println();
+                if (WiFi.status() == WL_CONNECTED) {
+                    wifi_connected = true;
+                    credStorage.saveCredentials(chosenSsid, enteredPass);
+                    Serial.printf("[WIFI STA] Ket noi thanh cong & da luu vao Flash! IP: %s\n", WiFi.localIP().toString().c_str());
+                } else {
+                    Serial.println(F("[WIFI STA] Khong the ket noi toi mang da chon."));
+                }
+            } else {
+                Serial.println(F("[WIFI] Bo qua cau hinh WiFi. Chay che do Offline."));
+            }
+        }
+
+        if (wifi_connected) {
+            g_mavlink.init(FlightConfig::GCS::UDP_PORT);
+#if CONFIG_FREERTOS_UNICORE || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+            xTaskCreate(gcs_wifi_task, "GCS_WiFi", 4096, NULL, 1, NULL);
+#else
+            xTaskCreatePinnedToCore(gcs_wifi_task, "GCS_WiFi", 4096, NULL, 1, NULL, 0);
+#endif
+        }
     }
 
 #if CONFIG_FREERTOS_UNICORE || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2)
@@ -562,40 +683,6 @@ void loop() {
                 memmove(rx_buf, rx_buf + 1, rx_len - 1);
                 rx_len--;
             }
-        }
-    }
-
-    // Cập nhật MAVLink GCS Telemetry cho QGroundControl (Core 0, 50Hz)
-    static uint32_t last_gcs_update_ms = 0;
-    uint32_t now_ms = millis();
-    if (now_ms - last_gcs_update_ms >= 20) {
-        last_gcs_update_ms = now_ms;
-
-        SensorPacket s_copy;
-        portENTER_CRITICAL(&g_data_mutex);
-        s_copy = g_sensor_data;
-        portEXIT_CRITICAL(&g_data_mutex);
-
-        bool qgc_arm = false;
-        bool qgc_disarm = false;
-        bool qgc_takeoff = false;
-        bool qgc_land = false;
-
-        g_mavlink.update(s_copy, g_is_armed, g_target_alt,
-                         qgc_arm, qgc_disarm, qgc_takeoff, qgc_land);
-
-        if (qgc_arm) {
-            g_is_armed = true;
-        }
-        if (qgc_disarm) {
-            g_is_armed = false;
-        }
-        if (qgc_takeoff) {
-            g_is_armed = true;
-            g_target_alt = FlightLogic::TAKEOFF_TARGET_ALT_M;
-        }
-        if (qgc_land) {
-            g_target_alt = 0.05f;
         }
     }
 }

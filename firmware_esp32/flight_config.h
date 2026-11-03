@@ -32,7 +32,7 @@ namespace FlightConfig {
 
         // Thời gian mất kết nối tối đa cho phép (Fail-safe timeout tính bằng milliseconds).
         // Nếu quá thời gian này không nhận được gói tin từ PC -> Tự động Disarm tắt động cơ ngay lập tức!
-        constexpr uint32_t FAILSAFE_TIMEOUT_MS   = 350; 
+        constexpr uint32_t FAILSAFE_TIMEOUT_MS   = 1500; 
     }
 
     // =====================================================================================
@@ -211,7 +211,7 @@ namespace FlightConfig {
     // =====================================================================================
     namespace GCS {
         // Bật / Tắt module phát sóng WiFi MAVLink kết nối QGroundControl
-        constexpr bool        ENABLE_WIFI_MAVLINK    = true;
+        constexpr bool        ENABLE_WIFI_MAVLINK    = false;
 
         // Tên mạng WiFi do ESP32 tự phát (SoftAP) và mật khẩu (tối thiểu 8 ký tự)
         constexpr const char* WIFI_SSID              = "ESP32_DRONE_GCS";

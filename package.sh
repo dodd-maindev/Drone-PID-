@@ -91,6 +91,12 @@ if [ -d "$SRC_DIR/firmware_esp32" ]; then
     echo -e "${GREEN}  ✓ Firmware ESP32: firmware_esp32/${NC}"
 fi
 
+# Chuyển đổi và tài liệu hướng dẫn
+cp "$SRC_DIR"/chuyen_sang_*.sh "$PKG_DIR/" 2>/dev/null || true
+cp "$SRC_DIR"/CHUYEN_SANG_*.bat "$PKG_DIR/" 2>/dev/null || true
+cp "$SRC_DIR"/HUONG_DAN_*.md "$PKG_DIR/" 2>/dev/null || true
+echo -e "${GREEN}  ✓ Scripts chuyển đổi chế độ & Tài liệu hướng dẫn${NC}"
+
 # === 4. Tạo launcher script ===
 echo -e "\n${BOLD}[4/4] Tạo launcher...${NC}"
 
