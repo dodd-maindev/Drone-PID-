@@ -235,9 +235,9 @@
     elCh5Q.textContent = rates[1].toFixed(1) + '°/s';
     elCh5R.textContent = rates[2].toFixed(1) + '°/s';
 
-    // Horizon readout
+    // Horizon readout (Chuẩn hàng không PFD: Chúi đầu xuống đất là góc âm)
     elHzRoll.textContent = `R: ${pkt.r.toFixed(1)}°`;
-    elHzPitch.textContent = `P: ${pkt.p.toFixed(1)}°`;
+    elHzPitch.textContent = `P: ${(-pkt.p).toFixed(1)}°`;
     elHzYaw.textContent = `Y: ${pkt.y.toFixed(1)}°`;
 
     // Tính toán số liệu thống kê nhanh trên bộ đệm
@@ -297,12 +297,12 @@
 
     hzCtx.clearRect(0, 0, w, h);
 
-    // Lấy góc roll và pitch gần nhất
+    // Lấy góc roll và pitch gần nhất (Quy chuẩn PFD: Tiến = chúi đầu xuống đất nâu)
     let roll = 0, pitch = 0;
     if (state.samples.length > 0) {
       const last = state.samples[state.samples.length - 1];
       roll = last.r * (Math.PI / 180);  // rad
-      pitch = last.p;                   // deg
+      pitch = -last.p;                  // Chuẩn PFD: Chúi đầu xuống mặt đất nâu
     }
 
     hzCtx.save();

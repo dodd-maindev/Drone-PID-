@@ -92,6 +92,58 @@ namespace FlightConfig {
     }
 
     // =====================================================================================
+    // 3b. THUẬT TOÁN ĐIỀU KHIỂN TRƯỢT TÍCH PHÂN ĐẦU CUỐI (ITSMC CONTROLLER)
+    //     Mô hình nghiên cứu từ itsmc.m: s = de + k11*e + k12*int(|e|^alpha * sign(e))
+    //     u = b_inv * (u_eq + u_sw) với lớp biên phi_b triệt tiêu hoàn toàn chattering
+    // =====================================================================================
+    namespace ITSMC {
+        // Bật thuật toán ITSMC thay thế PID (true = Sử dụng ITSMC, false = Quay lại PID)
+        constexpr bool  ENABLE_ITSMC             = true;
+
+        // Số mũ phân số (Fractional power, trong itsmc.m: alpha = 0.5)
+        constexpr float ALPHA                    = 0.5f;
+
+        // --- Cấu hình vòng thái độ (Attitude ITSMC: Roll & Pitch) ---
+        // Hệ số sai số trạng thái k11 (khớp với mô hình MATLAB ke11 = 3.0)
+        constexpr float ATT_K11                  = 4.0f;
+        // Hệ số tích phân mặt trượt k12 (Khử sai số tĩnh)
+        constexpr float ATT_K12                  = 0.15f;
+        // Hệ số chuyển mạch tuyến tính k2 (khớp với MATLAB ke2 = 5.0)
+        constexpr float ATT_K2                   = 4.0f;
+        // Hệ số chuyển mạch phi tuyến tanh k3 (giảm nhẹ để triệt tiêu chattering rung lắc khi đứng yên)
+        constexpr float ATT_K3                   = 0.02f;
+        // Nghịch đảo ma trận quán tính điều khiển Be^-1
+        constexpr float ATT_B_INV                = 0.0035f;
+        // Bề dày lớp biên làm trơn phi_b (Boundary layer) mở rộng để làm trơn vùng chuyển mạch quanh e=0
+        constexpr float ATT_PHI_B                = 0.30f;
+        // Vùng chuyển tiếp tuyến tính quanh e=0 khử hoàn toàn dao động hình sin
+        constexpr float ATT_EPS_LIN              = 0.050f;
+        // Giới hạn tích phân chống bão hòa mặt trượt (rad)
+        constexpr float ATT_MAX_INTEGRAL         = 0.15f;
+
+        // --- Cấu hình trục xoay hướng (Yaw ITSMC) ---
+        constexpr float YAW_K11                  = 3.5f;
+        constexpr float YAW_K12                  = 0.12f;
+        constexpr float YAW_K2                   = 3.0f;
+        constexpr float YAW_K3                   = 0.02f;
+        constexpr float YAW_B_INV                = 0.012f;
+        constexpr float YAW_PHI_B                = 0.25f;
+        constexpr float YAW_EPS_LIN              = 0.040f;
+        constexpr float YAW_MAX_INTEGRAL         = 0.12f;
+
+        // --- Cấu hình vòng độ cao (Altitude ITSMC) ---
+        // Bù lực nâng, vận tốc và độ cao theo ITSMC từ itsmc.m
+        constexpr float ALT_K11                  = 1.6f;
+        constexpr float ALT_K12                  = 0.25f;
+        constexpr float ALT_K2                   = 1.6f;
+        constexpr float ALT_K3                   = 0.06f;
+        constexpr float ALT_B_INV                = 0.075f;
+        constexpr float ALT_PHI_B                = 0.35f;
+        constexpr float ALT_EPS_LIN              = 0.06f;
+        constexpr float ALT_MAX_INTEGRAL         = 0.20f;
+    }
+
+    // =====================================================================================
     // 4. BỘ ĐIỀU KHIỂN ĐỘ CAO (ALTITUDE CONTROLLER)
     // =====================================================================================
     namespace Altitude {
@@ -133,38 +185,47 @@ namespace FlightConfig {
     // =====================================================================================
     namespace Position {
         // Hệ số P điều khiển vị trí: Chuyển khoảng cách sai lệch (m) thành vận tốc mục tiêu (m/s)
-        constexpr float KP_POS                   = 1.8f;
+        constexpr float KP_POS                   = 1.2f;
 
-        // Vận tốc tiếp cận tối đa khi tự động bay về điểm neo Hover (m/s)
-        constexpr float MAX_APPROACH_VEL         = 1.2f;
+        // Vận tốc tiếp cận tối đa khi tự động bò về tâm neo (m/s)
+        constexpr float MAX_APPROACH_VEL         = 0.60f;
+
+        // Vùng trơ điểm neo (m) - Bán kính 3.5cm: Ở trong vùng này khóa chết target_v = 0,
+        // chỉ kích hoạt giảm chấn vận tốc để triệt tiêu 100% hiện tượng lắc lư qua lại quanh tâm!
+        constexpr float POS_DEADBAND_M           = 0.035f;
 
         // Hệ số P vận tốc: Chuyển sai lệch vận tốc (m/s) thành gia tốc góc nghiêng mong muốn
-        // Cách chỉnh: Tăng sẽ giúp drone phanh gấp hơn, giảm sẽ giúp drone lướt mượt hơn.
-        constexpr float KP_VEL                   = 2.5f;
+        constexpr float KP_VEL                   = 2.0f;
+
+        // Hệ số hãm phanh mượt mà khi buông cần lái (Braking gain)
+        // Lực hãm tỷ lệ với vận tốc trôi: Tự động là phẳng về 0 khi dừng, không bao giờ bị giật lùi
+        constexpr float KP_BRAKE                 = 1.8f;
+
+        // Ngưỡng vận tốc coi như đã dừng hẳn để chuyển từ phanh (BRAKING) sang chốt neo (HOLD) (m/s)
+        constexpr float STOP_VEL_THRESHOLD       = 0.12f;
 
         // Hệ số tích phân triệt tiêu gió ngang (Ki Velocity / Wind Rejection)
-        constexpr float KI_VEL                   = 0.40f;
+        constexpr float KI_VEL                   = 0.45f;
 
         // Gia tốc gió cực đại bù trừ (m/s^2)
-        constexpr float MAX_WIND_ACCEL           = 1.5f;
+        constexpr float MAX_WIND_ACCEL           = 2.2f;
 
         // Giới hạn gia tốc lệnh người lái (m/s^2) - Giúp drone tăng tốc mượt mà, không giật ga
-        constexpr float MAX_CMD_ACCEL            = 3.5f;
-
-        // Ngưỡng vận tốc coi như đã dừng hẳn để chuyển từ phanh (BRAKING) sang giữ điểm (HOLD) (m/s)
-        constexpr float STOP_VEL_THRESHOLD       = 0.08f;
+        constexpr float MAX_CMD_ACCEL            = 3.0f;
 
         // Góc nghiêng thân cực đại khi người lái điều khiển bay tiến/lùi/trái/phải (độ)
-        // Cách chỉnh: Nếu thầy bảo "Bay chậm thôi cho an toàn" -> giảm về 8.0f - 10.0f.
-        //             Nếu thầy bảo "Tăng tốc độ lướt gió tối đa" -> tăng lên 15.0f - 20.0f.
         constexpr float MAX_TILT_DRIVING_DEG     = 12.0f;
 
         // Góc ngả ngược tối đa khi kích hoạt PHANH CHỦ ĐỘNG (Braking tilt) (độ)
-        // Thường lớn hơn góc lái bình thường một chút để ghìm drone dừng lại nhanh nhất.
-        constexpr float MAX_TILT_BRAKING_DEG     = 16.0f;
+        // 8 độ đảm bảo hãm dừng êm ái, trôi ít nhất có thể mà không bị nảy ngược!
+        constexpr float MAX_TILT_BRAKING_DEG     = 8.0f;
+
+        // Góc ngả tối đa khi đứng yên giữ điểm neo (Hold tilt) (độ)
+        // 7.5 độ đủ để nghiêng mình chống lại sức gió 1.5 - 2.0 m/s mà không bị trôi
+        constexpr float MAX_TILT_HOLD_DEG        = 7.5f;
 
         // Tốc độ thay đổi góc nghiêng tối đa (deg/s) - Bộ lọc Rate Limiter chống lật thân
-        constexpr float MAX_TILT_RATE_DEG_S      = 180.0f;
+        constexpr float MAX_TILT_RATE_DEG_S      = 120.0f;
     }
 
     // =====================================================================================
@@ -182,15 +243,15 @@ namespace FlightConfig {
         // 0.003m mỗi chu kỳ 5ms = 0.6 m/s (tiếp đất êm ái)
         constexpr float LAND_STEP_PER_TICK       = 0.003f;
 
-        // Độ cao ngưỡng xác định drone đã chạm đất -> Ngắt động cơ an toàn (m)
-        constexpr float TOUCHDOWN_ALT_THRESHOLD  = 0.10f;
+        // Độ cao ngưỡng xác định drone đã chạm đất -> Ngắt động cơ / Ground Idle an toàn (m)
+        constexpr float TOUCHDOWN_ALT_THRESHOLD  = 0.12f;
 
         // Độ cao tối thiểu để kích hoạt nghiêng thân điều khiển vị trí X/Y (m)
         // Khi z < 0.25m (sát mặt đất), khóa phẳng Roll=0, Pitch=0 để 4 chân nhấc đều, không bị quệt đất!
         constexpr float MIN_TAKEOFF_ALT_FOR_TILT = 0.25f;
 
         // Giới hạn trần bay tối đa và tối thiểu cho phép (m)
-        constexpr float MIN_FLIGHT_ALT_M         = 0.30f;
+        constexpr float MIN_FLIGHT_ALT_M         = 0.10f;
         constexpr float MAX_FLIGHT_ALT_M         = 10.0f;
     }
 
@@ -201,6 +262,13 @@ namespace FlightConfig {
         // Vận tốc góc cực đại của động cơ BLDC (rad/s)
         // Giá trị này được nhân với căn bậc 2 của tỉ lệ điều khiển u_i: w_i = max_rpm * sqrt(u_i)
         constexpr float MAX_MOTOR_ROT_VELOCITY   = 1000.0f;
+
+        // Tốc độ quay cầm chừng không tải dưới đất khi đã Arm (rad/s)
+        // Tại 200 rad/s, lực nâng chỉ bằng ~6% trọng lượng, drone nằm yên vững chắc trên mặt đất
+        constexpr float IDLE_MOTOR_ROT_VELOCITY  = 200.0f;
+
+        // Tốc độ biến thiên gia tốc cực đại của động cơ (rad/s^2) - Giúp tăng giảm ga mượt mà, chống giật vọt
+        constexpr float MAX_MOTOR_SLEW_RATE      = 1500.0f;
 
         // Ngưỡng lực nâng tối thiểu để bắt đầu quay cánh quạt (tránh quay khi đang disarm)
         constexpr float MIN_THRUST_THRESHOLD     = 0.02f;

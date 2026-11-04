@@ -29,7 +29,7 @@
     <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
     <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
 
-    <!-- PLUGIN HIỆU ỨNG GIÓ ĐỘNG THỰC TẾ -->
+    <!-- PLUGIN HIỆU ỨNG GIÓ ĐỘNG THỰC TẾ (1.5 m/s trục X, 0.5 m/s trục Y kèm gió giật) -->
     <wind>
       <linear_velocity>1.5 0.5 0</linear_velocity>
     </wind>
@@ -58,6 +58,10 @@
     <gui fullscreen="0">
       <camera name="user_camera">
         <pose>-3.5 0 2.5 0 0.35 0</pose>
+        <clip>
+          <near>0.15</near>
+          <far>800.0</far>
+        </clip>
       </camera>
     </gui>
 
@@ -116,10 +120,10 @@
       <link name="link">
         <!-- Đường chính chạy dọc trục Y -->
         <visual name="main_road">
-          <pose>18.0 0 0.003 0 0 0</pose>
+          <pose>18.0 0 0.015 0 0 0</pose>
           <geometry>
             <box>
-              <size>8.0 200.0 0.005</size>
+              <size>8.0 200.0 0.03</size>
             </box>
           </geometry>
           <material>
@@ -129,7 +133,7 @@
         </visual>
         <!-- Vạch sơn vàng tim đường -->
         <visual name="road_stripes">
-          <pose>18.0 0 0.006 0 0 0</pose>
+          <pose>18.0 0 0.033 0 0 0</pose>
           <geometry>
             <box>
               <size>0.2 190.0 0.005</size>
@@ -142,10 +146,10 @@
         </visual>
         <!-- Đường nhánh bê tông dẫn vào bãi đáp drone chính -->
         <visual name="driveway_to_helipad">
-          <pose>9.0 0 0.003 0 0 0</pose>
+          <pose>9.0 0 0.015 0 0 0</pose>
           <geometry>
             <box>
-              <size>10.0 3.0 0.005</size>
+              <size>10.0 3.0 0.03</size>
             </box>
           </geometry>
           <material>
@@ -237,7 +241,7 @@
     <include>
       <name>warehouse_east</name>
       <uri>model://warehouse</uri>
-      <pose>40.0 35.0 0 0 0 1.5708</pose>
+      <pose>53.0 65.0 0.03 0 0 1.5708</pose>
     </include>
     <include>
       <name>house_roadside_1</name>
@@ -256,27 +260,27 @@
     <include>
       <name>parked_suv</name>
       <uri>model://suv</uri>
-      <pose>15.5 12.0 0 0 0 1.5708</pose>
+      <pose>15.5 12.0 0.03 0 0 1.5708</pose>
     </include>
     <include>
       <name>parked_ambulance</name>
       <uri>model://ambulance</uri>
-      <pose>15.5 -12.0 0 0 0 1.5708</pose>
+      <pose>15.5 -12.0 0.03 0 0 1.5708</pose>
     </include>
     <include>
       <name>parked_suv_2</name>
       <uri>model://suv</uri>
-      <pose>15.5 30.0 0 0 0 1.5708</pose>
+      <pose>15.5 30.0 0.03 0 0 1.5708</pose>
     </include>
     <include>
       <name>parked_suv_3</name>
       <uri>model://suv</uri>
-      <pose>15.5 -30.0 0 0 0 -1.5708</pose>
+      <pose>15.5 -30.0 0.03 0 0 -1.5708</pose>
     </include>
     <include>
       <name>ambulance_far</name>
       <uri>model://ambulance</uri>
-      <pose>15.5 45.0 0 0 0 1.5708</pose>
+      <pose>15.5 45.0 0.03 0 0 1.5708</pose>
     </include>
 
     <!-- ============================================================ -->
@@ -301,7 +305,7 @@
     <include><name>oak_near_2</name><uri>model://oak_tree</uri>
       <pose>-20.0 -10.0 0 0 0 -1.2</pose></include>
     <include><name>oak_far_ne</name><uri>model://oak_tree</uri>
-      <pose>45.0 50.0 0 0 0 0.5</pose></include>
+      <pose>45.0 85.0 0 0 0 0.5</pose></include>
     <include><name>oak_far_sw</name><uri>model://oak_tree</uri>
       <pose>-55.0 -50.0 0 0 0 1.4</pose></include>
 

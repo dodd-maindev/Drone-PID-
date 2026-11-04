@@ -37,7 +37,7 @@ echo ======================================================================
 echo HUONG DAN:
 echo - Trong terminal WSL2 (Ubuntu), chay lenh: ls /dev/ttyUSB*
 echo - ESP32 se xuat hien tai /dev/ttyUSB0.
-echo - Gio ban co the chay ./run_hitl_xbox.sh hoac build bridge!
+echo - Gio ban co the chay ./run.sh de khoi dong toan bo he thong!
 echo ======================================================================
 echo.
 pause

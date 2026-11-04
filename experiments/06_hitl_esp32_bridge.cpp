@@ -238,9 +238,9 @@ std::string find_xbox_bridge_exe() {
             std::string bin_dir = self_path.substr(0, last_slash);
             std::string c1 = bin_dir + "/XboxBridge.exe";
             if (access(c1.c_str(), R_OK) == 0) return c1;
-            std::string c2 = bin_dir + "/xbox_controller_bridge.exe";
+            std::string c2 = bin_dir + "/../tools/xbox_bridge/XboxBridge.exe";
             if (access(c2.c_str(), R_OK) == 0) return c2;
-            std::string c3 = bin_dir + "/../tools/xbox_controller_bridge.exe";
+            std::string c3 = bin_dir + "/../XboxBridge.exe";
             if (access(c3.c_str(), R_OK) == 0) return c3;
         }
     }
@@ -249,8 +249,7 @@ std::string find_xbox_bridge_exe() {
         "bin/XboxBridge.exe",
         "./XboxBridge.exe",
         "XboxBridge.exe",
-        "tools/xbox_controller_bridge.exe",
-        "/home/do/drone_control_cpp/tools/xbox_controller_bridge.exe",
+        "tools/xbox_bridge/XboxBridge.exe",
         nullptr
     };
     for (int i = 0; relatives[i]; ++i) {
@@ -417,9 +416,22 @@ int main(int argc, char** argv) {
     std::string serial_port = "";
     if (argc > 1) {
         serial_port = argv[1];
-    } else {
-        // Tự động quét tìm cổng ESP32 đang hoạt động
-        const std::vector<std::string> candidates = {"/dev/ttyUSB1", "/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyACM1"};
+        // Kiểm tra xem cổng chỉ định có thực sự mở được không
+        int test_fd = open(serial_port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+        if (test_fd >= 0) {
+            close(test_fd);
+        } else {
+            std::cerr << "[!] Cổng chỉ định (" << serial_port << ") không mở được (stale node). Đang tự động quét cổng thay thế..." << std::endl;
+            serial_port = "";
+        }
+    }
+
+    if (serial_port.empty()) {
+        // Tự động quét tìm cổng ESP32 đang hoạt động (ưu tiên cổng mới nhất ttyUSB1, ttyUSB2... trước)
+        const std::vector<std::string> candidates = {
+            "/dev/ttyUSB3", "/dev/ttyUSB2", "/dev/ttyUSB1", "/dev/ttyUSB0",
+            "/dev/ttyACM2", "/dev/ttyACM1", "/dev/ttyACM0"
+        };
         for (const auto& dev : candidates) {
             int test_fd = open(dev.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
             if (test_fd >= 0) {
@@ -685,14 +697,19 @@ int main(int argc, char** argv) {
         if (xbox_connected) {
             uint16_t btns = latest_xbox_pkt.buttons;
 
-            // Phím Y: Cất cánh
+            // Phím Y: Bật / Tắt ARM động cơ (Quay không tải tại chỗ)
             if ((btns & XBOX_BTN_Y) && !(last_xbox_buttons & XBOX_BTN_Y)) {
-                is_armed = true;
-                req_takeoff = true;
+                is_armed = !is_armed;
+                req_takeoff = false;
                 req_land = false;
                 send_camera_follow();
-                log_event("XBOX_BTN", "Nút Y được bấm -> ARM ĐỘNG CƠ & CẤT CÁNH LÊN 2.0M");
-                std::cout << "\n[🚀 TAKEOFF] Nút Y Xbox 360 -> ARM & CẤT CÁNH LÊN 2.0M!" << std::endl;
+                if (is_armed) {
+                    log_event("XBOX_BTN", "Nút Y được bấm -> ARM ĐỘNG CƠ (Quay không tải tại chỗ)");
+                    std::cout << "\n[⚡ ARM] Nút Y Xbox 360 -> ĐÃ ARM! Cánh quạt quay nhẹ tại chỗ. Đẩy cần ga Z lên để cất cánh!" << std::endl;
+                } else {
+                    log_event("XBOX_BTN", "Nút Y được bấm -> DISARM ĐỘNG CƠ");
+                    std::cout << "\n[🛑 DISARM] Nút Y Xbox 360 -> ĐÃ DISARM! Động cơ ngừng quay." << std::endl;
+                }
             }
 
             // Phím A: Hạ cánh
@@ -749,20 +766,16 @@ int main(int argc, char** argv) {
                 gp_yaw_active = true;
             }
 
-            // Con lăn trái (Left Stick Y): Điều khiển ĐỘ CAO (Bay lên / Hạ xuống)
-            // Chỉ cho phép can thiệp hủy cất cánh tự động khi người lái cố tình gạt cần mạnh (> 16000)
+            // Con lăn trái (Left Stick Y): Điều khiển ĐỘ CAO (Cất cánh / Tăng ga / Hạ ga)
             if (latest_xbox_pkt.thumb_ly > DEADZONE) {
                 gp_alt_vel = static_cast<float>(latest_xbox_pkt.thumb_ly - DEADZONE) / (32767.0f - DEADZONE) * 1.5f;
-                if (!req_takeoff || latest_xbox_pkt.thumb_ly > 16000) {
-                    gp_alt_active = true;
-                    req_takeoff = false;
-                }
+                gp_alt_active = true;
+                req_takeoff = false;
+                req_land = false;
             } else if (latest_xbox_pkt.thumb_ly < -DEADZONE) {
                 gp_alt_vel = static_cast<float>(latest_xbox_pkt.thumb_ly + DEADZONE) / (32768.0f - DEADZONE) * 1.2f;
-                if (!req_takeoff || latest_xbox_pkt.thumb_ly < -16000) {
-                    gp_alt_active = true;
-                    req_takeoff = false;
-                }
+                gp_alt_active = true;
+                req_takeoff = false;
             }
 
             // Con lăn phải (Right Stick Y): Tiến / Lùi (Pitch)
@@ -842,12 +855,17 @@ int main(int argc, char** argv) {
             switch (key) {
                 case 'y': case 'Y':
                 case 'q': case 'Q':
-                    is_armed = true;
-                    req_takeoff = true;
+                    is_armed = !is_armed;
+                    req_takeoff = false;
                     req_land = false;
                     send_camera_follow();
-                    log_event("KEYBOARD", std::string("Phím '") + key + "' -> ARM ĐỘNG CƠ & CẤT CÁNH LÊN 2.0M");
-                    std::cout << "\n[🚀 TAKEOFF] Đã nhận phím " << key << " -> ARM ĐỘNG CƠ & CẤT CÁNH LÊN 2.0M!" << std::endl;
+                    if (is_armed) {
+                        log_event("KEYBOARD", std::string("Phím '") + key + "' -> ARM ĐỘNG CƠ (Quay không tải tại chỗ)");
+                        std::cout << "\n[⚡ ARM] Đã nhận phím " << key << " -> ĐÃ ARM! Cánh quạt quay nhẹ tại chỗ. Nhấn W để cất cánh!" << std::endl;
+                    } else {
+                        log_event("KEYBOARD", std::string("Phím '") + key + "' -> DISARM ĐỘNG CƠ");
+                        std::cout << "\n[🛑 DISARM] Đã nhận phím " << key << " -> ĐÃ DISARM! Động cơ ngừng quay." << std::endl;
+                    }
                     break;
                 case 'a': case 'A':
                     req_land = true;
@@ -869,6 +887,7 @@ int main(int argc, char** argv) {
                     alt_vel_cmd = 0.85f;
                     last_alt_key_time = now;
                     req_takeoff = false;
+                    req_land = false;
                     break;
                 case 's': case 'S':
                     alt_vel_cmd = -0.70f;
@@ -1263,7 +1282,7 @@ int main(int argc, char** argv) {
         }
 
         // Cập nhật âm thanh động cơ (cất cánh phát start.mp3, bay lặp continue.mp3, hạ cánh giảm dần rồi tắt)
-        sound_mgr.update(is_armed, req_land, g_pos_z, last_motor_w0);
+        sound_mgr.update(is_armed, req_land, g_pos_z, g_vz, last_motor_w0, 0.010f);
 
         // Ghi log định kỳ mỗi 5 giây vào hitl_bridge.log
         static auto last_stat_log_time = std::chrono::steady_clock::now();
@@ -1282,7 +1301,9 @@ int main(int argc, char** argv) {
         if (flip_phase != PHASE_IDLE) {
             status_str = "🌀 FLIP 360°...";
         } else if (!is_armed) {
-            status_str = "DISARMED (Bấm Y/Q để bay)";
+            status_str = "DISARMED (Bấm Y để ARM)";
+        } else if (last_motor_w0 < 300.0f) {
+            status_str = "ARMED: QUAY TẠI CHỖ (Đẩy cần Z để bay)";
         } else if (req_land) {
             status_str = "HẠ CÁNH...";
         } else {

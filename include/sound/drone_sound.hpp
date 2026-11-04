@@ -17,8 +17,13 @@ public:
     // Khởi tạo audio engine và nạp các file mp3
     bool init(const std::string& audio_dir = "");
 
-    // Cập nhật trạng thái âm thanh ở mỗi chu kỳ lặp (100Hz)
-    // is_landing: cờ người dùng ra lệnh hạ cánh (nút A)
+    // Cập nhật trạng thái âm thanh ở mỗi chu kỳ lặp (hỗ trợ vận tốc thẳng đứng vz và dt thời gian thực)
+    // Tự động nhận diện chính xác 2 khoảnh khắc:
+    // 1. Bay cao lên: Âm lượng & cao độ tăng dần đều theo thời gian leo dốc và lực đẩy động cơ
+    // 2. Bay thấp xuống chuẩn bị hạ cánh: Âm lượng & cao độ giảm dần đều theo thời gian và khoảng cách đất
+    void update(bool is_armed, bool is_landing, float altitude, float vz, float motor_speed_w0, float dt = 0.004f);
+
+    // Phương thức tương thích ngược
     void update(bool is_armed, bool is_landing, float altitude, float motor_speed_w0);
 
     // Dừng tất cả âm thanh
@@ -38,5 +43,9 @@ private:
     bool m_playing;
     float m_volume;
     float m_land_start_alt;
+    float m_prev_alt{0.0f};
+    float m_ascent_time{0.0f};
+    float m_descent_time{0.0f};
+    float m_filtered_pitch{1.0f};
 };
 

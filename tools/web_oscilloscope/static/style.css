@@ -495,7 +495,7 @@ body.dark-theme {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
-  height: 120px;
+  height: 130px;
 }
 
 .motor-unit {
@@ -509,11 +509,17 @@ body.dark-theme {
 }
 
 .mu-label {
-  font-size: 0.62rem;
+  font-size: 0.60rem;
   font-family: var(--font-mono);
   color: var(--text-muted);
   margin-bottom: 6px;
   text-align: center;
+  height: 28px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  line-height: 1.15;
 }
 
 .mu-bar-track {
@@ -540,6 +546,9 @@ body.dark-theme {
   font-weight: 700;
   color: #fff;
   margin-top: 6px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
 }
 
 /* Metrics List */

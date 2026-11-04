@@ -23,6 +23,8 @@ for /f "tokens=1,2,3" %%a in ('usbipd list ^| findstr /i "10c4:ea60 1a86:7523 04
     usbipd detach --busid %%a >nul 2>&1
     echo       - Dang tra lai quyen dieu khien cho Windows (unbind)...
     usbipd unbind --busid %%a >nul 2>&1
+    echo       - Dang xoa bo dem ghost ports va khoa chet cong COM3...
+    powershell -NoProfile -Command "$db = New-Object byte[] 32; Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\COM Name Arbiter' -Name ComDB -Value $db -Force; $k='HKLM:\SYSTEM\CurrentControlSet\Enum\USB\VID_10C4&PID_EA60\0001'; if(Test-Path $k){Set-ItemProperty -Path \"$k\Device Parameters\" -Name PortName -Value 'COM3' -Force; Set-ItemProperty -Path $k -Name FriendlyName -Value 'Silicon Labs CP210x USB to UART Bridge (COM3)' -Force}; pnputil /restart-device 'USB\VID_10C4&PID_EA60\0001' >$null 2>&1"
 )
 
 if %FOUND%==0 (
