@@ -775,7 +775,8 @@
   </library_geometries>
   <library_visual_scenes>
     <visual_scene id="Scene" name="Scene">
-      <node id="ground_out" name="ground_out" type="NODE">
+      <!-- ground_out removed to prevent Z-fighting and terrain clipping -->
+      <!-- <node id="ground_out" name="ground_out" type="NODE">
         <matrix sid="transform">0.424627 0 0 0 0 0.647261 0 -6.05169 0 0 1 0 0 0 0 1</matrix>
         <instance_geometry url="#Plane_019-mesh" name="ground_out">
           <bind_material>
@@ -786,7 +787,7 @@
             </technique_common>
           </bind_material>
         </instance_geometry>
-      </node>
+      </node> -->
       <node id="drop1" name="drop1" type="NODE">
         <matrix sid="transform">0.135525 0 0 8.369245 0 4.295897 0 -27.99206 0 0 1 0.101 0 0 0 1</matrix>
         <instance_geometry url="#Plane_018-mesh" name="drop1">

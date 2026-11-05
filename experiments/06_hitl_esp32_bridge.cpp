@@ -39,6 +39,7 @@
 #include "core/vehicle_state.hpp"
 #include "math/math_utils.hpp"
 #include "sound/drone_sound.hpp"
+#include "control/waypoint_navigator.hpp"
 
 // Cấu trúc gói tin UDP truyền từ Tay cầm Xbox 360
 #pragma pack(push, 1)
@@ -413,15 +414,25 @@ int main(int argc, char** argv) {
     init_logging();
     log_event("STARTUP", "Khởi động cầu nối Drone HITL (ESP32 <-> Gazebo Sim)");
 
+    bool auto_mode_enabled = false;
     std::string serial_port = "";
-    if (argc > 1) {
-        serial_port = argv[1];
-        // Kiểm tra xem cổng chỉ định có thực sự mở được không
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--auto" || arg == "-a") {
+            auto_mode_enabled = true;
+        } else if (arg.rfind("/dev/", 0) == 0) {
+            serial_port = arg;
+        } else if (serial_port.empty() && arg[0] != '-') {
+            serial_port = arg;
+        }
+    }
+
+    if (!serial_port.empty()) {
         int test_fd = open(serial_port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
         if (test_fd >= 0) {
             close(test_fd);
         } else {
-            std::cerr << "[!] Cổng chỉ định (" << serial_port << ") không mở được (stale node). Đang tự động quét cổng thay thế..." << std::endl;
+            std::cerr << "[!] Cổng chỉ định (" << serial_port << ") không mở được. Đang tự động quét cổng thay thế..." << std::endl;
             serial_port = "";
         }
     }
@@ -559,9 +570,42 @@ int main(int argc, char** argv) {
     DroneSoundManager sound_mgr;
     sound_mgr.init();
 
+    // Khởi tạo Bộ dẫn đường tự động Waypoint Navigator
+    DroneControl::WaypointNavigator waypoint_nav;
+    g_mavlink_bridge.set_navigator(&waypoint_nav);
+
+    waypoint_nav.set_waypoint_reached_callback([](uint16_t seq) {
+        g_mavlink_bridge.send_mission_item_reached(seq);
+        std::cout << "\n[🗺️ MISSION] [✓] Đã tới Waypoint #" << seq << " thành công!" << std::endl;
+    });
+
+    waypoint_nav.set_current_seq_callback([](uint16_t seq) {
+        g_mavlink_bridge.send_mission_current(seq);
+    });
+
+    waypoint_nav.set_status_callback([](const std::string& msg, uint8_t severity) {
+        g_mavlink_bridge.send_statustext(msg, severity);
+    });
+
     // Khởi động cầu nối MAVLink Telemetry UDP 14550 tới QGroundControl trên Windows
     g_mavlink_bridge.init(&g_vehicle_state);
-    std::cout << "[✓] Đã kích hoạt MAVLink UDP Gateway (Port 14550 -> QGroundControl)!" << std::endl;
+    g_mavlink_bridge.set_auto_allowed(auto_mode_enabled);
+    std::cout << "[✓] Đã kích hoạt MAVLink UDP Gateway & Waypoint Navigator (Port 14550 -> QGroundControl)!" << std::endl;
+
+    if (auto_mode_enabled) {
+        std::cout << "\n\033[1;36m╔══════════════════════════════════════════════════════════════╗\033[0m" << std::endl;
+        std::cout << "\033[1;36m║  🤖 CHẾ ĐỘ BAY: TỰ ĐỘNG (--auto)                            ║\033[0m" << std::endl;
+        std::cout << "\033[1;36m║  • QGroundControl: Được phép Guided (Click & Fly) & Mission  ║\033[0m" << std::endl;
+        std::cout << "\033[1;36m║  • Gạt cần lái Xbox/Phím bất kỳ lúc nào để ngắt tự động      ║\033[0m" << std::endl;
+        std::cout << "\033[1;36m╚══════════════════════════════════════════════════════════════╝\033[0m\n" << std::endl;
+    } else {
+        std::cout << "\n\033[1;33m╔══════════════════════════════════════════════════════════════╗\033[0m" << std::endl;
+        std::cout << "\033[1;33m║  🎮 CHẾ ĐỘ BAY: THỦ CÔNG THUẦN TÚY (Mặc định)               ║\033[0m" << std::endl;
+        std::cout << "\033[1;33m║  • Lái bằng Tay cầm Xbox 360 / Bàn phím                      ║\033[0m" << std::endl;
+        std::cout << "\033[1;33m║  • QGroundControl: Chỉ dùng giám sát số liệu Telemetry       ║\033[0m" << std::endl;
+        std::cout << "\033[1;33m║  💡 Muốn bật bay tự động, khởi động lại: ./run.sh --auto     ║\033[0m" << std::endl;
+        std::cout << "\033[1;33m╚══════════════════════════════════════════════════════════════╝\033[0m\n" << std::endl;
+    }
 
     set_nonblocking_terminal(true);
 
@@ -1056,6 +1100,48 @@ int main(int argc, char** argv) {
         if (req_takeoff)  send_pkt.flags |= CTRL_FLAG_TAKEOFF;
         if (req_land)     send_pkt.flags |= CTRL_FLAG_LAND;
 
+        // 2c. Kiểm tra can thiệp thủ công (Manual Pilot Stick Override)
+        bool manual_stick_moving = gp_pitch_active || kb_pitch_active ||
+                                   gp_roll_active || kb_roll_active ||
+                                   gp_alt_active || kb_alt_active ||
+                                   gp_yaw_active || kb_yaw_active;
+
+        if (manual_stick_moving && waypoint_nav.is_auto_active()) {
+            waypoint_nav.cancel_auto_mode("Manual Stick Override");
+            g_mavlink_bridge.send_statustext("Auto Cancelled: Pilot Stick Active", 6);
+            std::cout << "\n[⚠️ CAN THIỆP THỦ CÔNG] Phi công can thiệp cần lái -> Hủy chế độ bay tự động!" << std::endl;
+        }
+
+        // Nếu KHÔNG chạy cờ --auto, luôn giữ ở MANUAL và chặn can thiệp tự động
+        if (!auto_mode_enabled && waypoint_nav.is_auto_active()) {
+            waypoint_nav.cancel_auto_mode("Manual Mode Enforced");
+        }
+
+        // Nếu đang ở chế độ tự động (--auto) và không có thao tác can thiệp:
+        if (auto_mode_enabled && waypoint_nav.is_auto_active() && !manual_stick_moving && flip_phase == PHASE_IDLE) {
+            auto nav_cmd = waypoint_nav.update(send_pkt.x, send_pkt.y, send_pkt.z, send_pkt.yaw,
+                                               send_pkt.vx, send_pkt.vy, send_pkt.vz, 0.010f);
+            send_pkt.cmd_vx = nav_cmd.cmd_vx;
+            send_pkt.cmd_vy = nav_cmd.cmd_vy;
+            send_pkt.cmd_alt_vel = nav_cmd.cmd_alt_vel;
+            send_pkt.cmd_yaw_rate = nav_cmd.cmd_yaw_rate;
+            if (nav_cmd.is_driving_x) send_pkt.flags |= CTRL_FLAG_DRIVING_X;
+            if (nav_cmd.is_driving_y) send_pkt.flags |= CTRL_FLAG_DRIVING_Y;
+            if (nav_cmd.is_alt_active) send_pkt.flags |= CTRL_FLAG_ALT_ACTIVE;
+            if (nav_cmd.is_landing) req_land = true;
+            if (nav_cmd.is_armed) {
+                if (!is_armed) {
+                    is_armed = true;
+                    std::cout << "\n[🚀 AUTO ARM & TAKEOFF] Tự động ARM và bốc lên cất cánh!" << std::endl;
+                }
+                send_pkt.flags |= CTRL_FLAG_ARMED;
+            }
+            // Nếu đang cất cánh từ mặt đất (z < 0.8m) -> Bật cờ TAKEOFF để ESP32 chuyển ngay sang FLYING
+            if (send_pkt.z < 0.80f && nav_cmd.cmd_alt_vel > 0.2f) {
+                send_pkt.flags |= CTRL_FLAG_TAKEOFF;
+            }
+        }
+
         if (flip_phase != PHASE_IDLE) {
             // Trong lúc lộn 360°, giữ trạng thái giả lập thăng bằng gửi sang ESP32
             // để bộ PID trong ESP32 không bị dội tích phân (anti-windup)
@@ -1301,13 +1387,22 @@ int main(int argc, char** argv) {
         if (flip_phase != PHASE_IDLE) {
             status_str = "🌀 FLIP 360°...";
         } else if (!is_armed) {
-            status_str = "DISARMED (Bấm Y để ARM)";
+            status_str = auto_mode_enabled ? "DISARMED (Bấm Y để ARM / Chờ QGC)" : "DISARMED (Bấm Y để ARM)";
+        } else if (auto_mode_enabled && waypoint_nav.is_auto_active()) {
+            if (waypoint_nav.get_nav_mode() == DroneControl::NavMode::GUIDED) {
+                status_str = "🎯 GUIDED (Click & Fly)";
+            } else if (waypoint_nav.get_nav_mode() == DroneControl::NavMode::MISSION) {
+                status_str = "🗺️ MISSION (WP " + std::to_string(waypoint_nav.get_current_seq() + 1) + "/" +
+                             std::to_string(waypoint_nav.get_waypoint_count()) + ")";
+            } else if (waypoint_nav.get_nav_mode() == DroneControl::NavMode::AUTO_LAND) {
+                status_str = "🛬 AUTO LAND";
+            }
         } else if (last_motor_w0 < 300.0f) {
             status_str = "ARMED: QUAY TẠI CHỖ (Đẩy cần Z để bay)";
         } else if (req_land) {
             status_str = "HẠ CÁNH...";
         } else {
-            status_str = "ĐANG BAY";
+            status_str = auto_mode_enabled ? "ĐANG BAY [TỰ ĐỘNG CHỜ]" : "ĐANG BAY [THỦ CÔNG]";
         }
 
         // 5a. Phát Telemetry JSON sang Web Oscilloscope (50Hz = 20ms)

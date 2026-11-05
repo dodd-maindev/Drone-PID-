@@ -7,12 +7,26 @@
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BRIDGE_BIN="$SCRIPT_DIR/bin/06_hitl_esp32_bridge"
-WORLD_SDF="$SCRIPT_DIR/simulation/worlds/drone_world.sdf"
+if [ "$(basename "$SCRIPT_DIR")" = "scripts" ]; then
+    PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+    PROJECT_DIR="$SCRIPT_DIR"
+fi
+
+BRIDGE_BIN="$PROJECT_DIR/bin/06_hitl_esp32_bridge"
+WORLD_SDF="$PROJECT_DIR/simulation/worlds/drone_world.sdf"
 
 # Màu sắc
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+# Kiểm tra tham số dòng lệnh chế độ tự động (--auto hoặc -a)
+AUTO_FLAG=""
+for arg in "$@"; do
+    if [ "$arg" == "--auto" ] || [ "$arg" == "-a" ]; then
+        AUTO_FLAG="--auto"
+    fi
+done
 
 GAZEBO_PID=""
 GUI_PID=""
@@ -119,7 +133,7 @@ if [ -d "/usr/lib/wsl" ] || grep -qi microsoft /proc/version 2>/dev/null; then
         fi
 
         # Tự động kích hoạt Cầu nối Tay Cầm Xbox trên Windows (gửi trực tiếp tới WSL IP)
-        XBOX_EXE="$SCRIPT_DIR/bin/XboxBridge.exe"
+        XBOX_EXE="$PROJECT_DIR/bin/XboxBridge.exe"
         WSL_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || hostname -I | awk '{print $1}')
         [ -z "$WSL_IP" ] && WSL_IP="127.0.0.1"
         if [ -f "$XBOX_EXE" ]; then
@@ -235,7 +249,7 @@ fi
 
 # Khởi động Gazebo
 echo -e "${YELLOW}[*] Khởi động Gazebo Sim...${NC}"
-export GZ_SIM_RESOURCE_PATH="$SCRIPT_DIR/simulation/models:${HOME}/.gz/models"
+export GZ_SIM_RESOURCE_PATH="$PROJECT_DIR/simulation/models:${HOME}/.gz/models"
 
 # === TỰ ĐỘNG PHÁT HIỆN GPU ===
 GPU_INFO=""
@@ -317,8 +331,7 @@ echo -e "${GREEN}[✓] Gazebo đã sẵn sàng!${NC}"
 ) &
 
 # Khởi động Trạm đo Oscilloscope & Telemetry Web (Cổng 8088)
-OSC_SERVER="$SCRIPT_DIR/tools/web_oscilloscope/server.py"
-[ ! -f "$OSC_SERVER" ] && OSC_SERVER="$SCRIPT_DIR/../tools/web_oscilloscope/server.py"
+OSC_SERVER="$PROJECT_DIR/tools/web_oscilloscope/server.py"
 
 if [ -f "$OSC_SERVER" ]; then
     pkill -f "web_oscilloscope/server.py" 2>/dev/null || true
@@ -357,12 +370,23 @@ elif command -v qgroundcontrol &>/dev/null; then
 fi
 
 # Đồng bộ binary HITL Bridge mới nhất nếu có trong build/
-if [ -f "$SCRIPT_DIR/../build/06_hitl_esp32_bridge" ]; then
-    cp -u "$SCRIPT_DIR/../build/06_hitl_esp32_bridge" "$BRIDGE_BIN" 2>/dev/null || true
+if [ -f "$PROJECT_DIR/build/06_hitl_esp32_bridge" ]; then
+    cp -u "$PROJECT_DIR/build/06_hitl_esp32_bridge" "$BRIDGE_BIN" 2>/dev/null || true
 fi
 
 # Hiển thị hướng dẫn
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+if [ -n "$AUTO_FLAG" ]; then
+    echo -e "${GREEN}${BOLD}  🤖 CHẾ ĐỘ BAY: TỰ ĐỘNG (--auto)${NC}"
+    echo -e "     • QGroundControl: Được phép Guided (Click & Fly) & nạp Waypoints"
+    echo -e "     • Gạt cần lái Xbox / Bàn phím bất kỳ lúc nào để lấy lại quyền lái thủ công"
+else
+    echo -e "${YELLOW}${BOLD}  🎮 CHẾ ĐỘ BAY: THỦ CÔNG THUẦN TÚY (Mặc định)${NC}"
+    echo -e "     • Điều khiển 100% bằng tay cầm Xbox 360 / Bàn phím"
+    echo -e "     • QGroundControl: Chỉ dùng giám sát Telemetry (không can thiệp lái)"
+    echo -e "     • Mẹo: Muốn bật tính năng bay tự động, chạy: ${CYAN}./run.sh --auto${NC}"
+fi
+echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
 echo -e "${BOLD}  📊 TRẠM ĐO SÓNG & ĐIỀU KHIỂN:${NC}"
 echo -e "    ${GREEN}✓ Web Oscilloscope:${NC} http://localhost:8088"
 echo -e "    ${GREEN}✓ QGroundControl:${NC}   Kết nối tự động qua UDP 14550"
@@ -381,6 +405,6 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${YELLOW}  Ctrl+C để tắt tất cả${NC}"
 echo ""
 
-# Chạy bridge
-"$BRIDGE_BIN" "$ESP_PORT"
+# Chạy bridge với cờ chế độ (nếu có)
+"$BRIDGE_BIN" "$ESP_PORT" $AUTO_FLAG
 cleanup

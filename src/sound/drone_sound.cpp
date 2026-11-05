@@ -5,14 +5,21 @@
 #include <iostream>
 #include <iomanip>
 #include <vector>
+#include <cmath>
 #include <unistd.h>
 #include <algorithm>
+#include <chrono>
 
 struct DroneSoundManager::Impl {
     ma_engine engine;
     ma_sound engine_sound;
+    ma_audio_buffer audio_buf;
+    std::vector<float> pcm_buffer;
+    bool buffer_ready = false;
     bool sound_loaded = false;
     bool engine_ready = false;
+    float last_applied_vol = -1.0f;
+    float last_applied_pitch = -1.0f;
 };
 
 static std::string resolve_path(const std::string& filename, const std::string& preferred_dir) {
@@ -54,24 +61,73 @@ bool DroneSoundManager::init(const std::string& audio_dir) {
     }
     m_impl->engine_ready = true;
 
-    // Ưu tiên nạp continue.mp3 (âm thanh động cơ bay liên tục), fallback sang start.mp3
+    // Giải mã đoạn âm thanh động cơ ổn định nhất (giây thứ 6 -> 22 của continue.mp3)
+    // và trộn nối mượt (Cosine Crossfade 2 giây) trực tiếp trong bộ nhớ RAM (ma_audio_buffer).
+    // Cách này loại bỏ hoàn toàn:
+    //  1) Đoạn im lặng 4.2 giây ở cuối file continue.mp3 gốc (giây 230..234)
+    //  2) Tiếng "bụp bụp" khi lặp qua ranh giới trang bộ nhớ (paged buffer) hoặc đầu/cuối file
+    //  3) Lỗi mất tiếng ở lần cất cánh thứ 2 trở đi sau khi hạ cánh
     std::string sound_path = resolve_path("continue.mp3", audio_dir);
-    res = ma_sound_init_from_file(&m_impl->engine, sound_path.c_str(), 0, NULL, NULL, &m_impl->engine_sound);
+    ma_decoder decoder;
+    ma_decoder_config dec_cfg = ma_decoder_config_init(ma_format_f32, 1, 48000);
+    res = ma_decoder_init_file(sound_path.c_str(), &dec_cfg, &decoder);
     if (res != MA_SUCCESS) {
         sound_path = resolve_path("start.mp3", audio_dir);
-        res = ma_sound_init_from_file(&m_impl->engine, sound_path.c_str(), 0, NULL, NULL, &m_impl->engine_sound);
+        res = ma_decoder_init_file(sound_path.c_str(), &dec_cfg, &decoder);
+    }
+
+    if (res == MA_SUCCESS) {
+        const ma_uint64 sample_rate = 48000;
+        const ma_uint64 skip_frames = 6 * sample_rate;      // Bỏ qua 6s khởi động đầu file
+        const ma_uint64 read_frames = 16 * sample_rate;     // Đọc 16s âm thanh động cơ đều nhất
+        const ma_uint64 crossfade_frames = 2 * sample_rate; // Crossfade 2s tạo vòng lặp 14s không điểm nối
+
+        ma_decoder_seek_to_pcm_frame(&decoder, skip_frames);
+        std::vector<float> raw_pcm(read_frames, 0.0f);
+        ma_uint64 frames_read = 0;
+        ma_decoder_read_pcm_frames(&decoder, raw_pcm.data(), read_frames, &frames_read);
+        ma_decoder_uninit(&decoder);
+
+        if (frames_read > crossfade_frames * 2) {
+            ma_uint64 loop_frames = frames_read - crossfade_frames;
+            m_impl->pcm_buffer.resize(loop_frames);
+
+            // Trộn mượt (Cosine Crossfade) phần đầu và phần đuôi để vòng lặp liền mạch 100%
+            for (ma_uint64 i = 0; i < crossfade_frames; ++i) {
+                float t = static_cast<float>(i) / static_cast<float>(crossfade_frames);
+                float fade_in  = 0.5f * (1.0f - std::cos(t * 3.14159265f));
+                float fade_out = 1.0f - fade_in;
+                m_impl->pcm_buffer[i] = fade_in * raw_pcm[i] + fade_out * raw_pcm[loop_frames + i];
+            }
+            for (ma_uint64 i = crossfade_frames; i < loop_frames; ++i) {
+                m_impl->pcm_buffer[i] = raw_pcm[i];
+            }
+
+            ma_audio_buffer_config buf_cfg = ma_audio_buffer_config_init(
+                ma_format_f32, 1, loop_frames, m_impl->pcm_buffer.data(), NULL);
+            res = ma_audio_buffer_init(&buf_cfg, &m_impl->audio_buf);
+            if (res == MA_SUCCESS) {
+                m_impl->buffer_ready = true;
+                ma_data_source_set_looping(&m_impl->audio_buf, MA_TRUE);
+                res = ma_sound_init_from_data_source(
+                    &m_impl->engine, &m_impl->audio_buf, 0, NULL, &m_impl->engine_sound);
+            }
+        } else {
+            res = MA_ERROR;
+        }
     }
 
     if (res == MA_SUCCESS) {
         ma_sound_set_looping(&m_impl->engine_sound, MA_TRUE);
         ma_sound_set_volume(&m_impl->engine_sound, 0.0f);
-        // Bắt đầu phát âm thanh lặp vô tận ở volume 0.0 ngay khi khởi tạo
-        // Nhờ vậy luồng audio luôn sẵn sàng (Hot/Pre-primed), loại bỏ hoàn toàn 100% độ trễ khởi động khi bấm Y!
+        m_impl->last_applied_vol = 0.0f;
+        m_impl->last_applied_pitch = 1.0f;
+        // Phát liên tục vô tận ở tầng mixer (chỉ điều khiển qua volume & pitch)
         ma_sound_start(&m_impl->engine_sound);
         m_impl->sound_loaded = true;
-        std::cout << "[✓] Nạp âm thanh động cơ drone (Pre-primed Looping): " << sound_path << std::endl;
+        std::cout << "[✓] Nạp âm thanh động cơ drone (Seamless Crossfade Loop): " << sound_path << std::endl;
     } else {
-        std::cerr << "[!] Không tìm thấy file âm thanh động cơ drone (Code: " << res << ")" << std::endl;
+        std::cerr << "[!] Không tìm thấy hoặc không thể giải mã file âm thanh động cơ drone (Code: " << res << ")" << std::endl;
     }
 
     m_state = STATE_IDLE;
@@ -86,10 +142,9 @@ void DroneSoundManager::update(bool is_armed, bool is_landing, float altitude, f
     if (!m_initialized || !m_impl->engine_ready || !m_impl->sound_loaded) return;
     if (dt <= 0.0005f || dt > 0.1f) dt = 0.004f;
 
-    // Luôn đảm bảo sound engine đang chạy
-    if (!ma_sound_is_playing(&m_impl->engine_sound)) {
-        ma_sound_start(&m_impl->engine_sound);
-    }
+    // Âm thanh đã được khởi tạo loop vô tận ở volume=0 từ lúc init.
+    // KHÔNG BAO GIỜ gọi seek/start trong update() — đây là nguyên nhân gốc gây tiếng "bụp bụp"!
+    // Chỉ cần điều chỉnh volume và pitch, âm thanh tự chạy mãi mãi.
 
     float target_vol = 0.0f;
     float target_pitch = 1.0f;
@@ -208,15 +263,14 @@ void DroneSoundManager::update(bool is_armed, bool is_landing, float altitude, f
     m_filtered_pitch = std::clamp(m_filtered_pitch, 0.70f, 1.30f);
 
     // 6. CẬP NHẬT AUDIO ENGINE: Bộ lọc Deadband chống nghẽn luồng âm thanh
-    static float last_applied_vol = -1.0f;
-    static float last_applied_pitch = -1.0f;
-    if (std::abs(m_volume - last_applied_vol) >= 0.004f) {
+    if (std::abs(m_volume - m_impl->last_applied_vol) >= 0.004f ||
+        (m_volume == 0.0f && m_impl->last_applied_vol != 0.0f)) {
         ma_sound_set_volume(&m_impl->engine_sound, m_volume);
-        last_applied_vol = m_volume;
+        m_impl->last_applied_vol = m_volume;
     }
-    if (std::abs(m_filtered_pitch - last_applied_pitch) >= 0.005f) {
+    if (std::abs(m_filtered_pitch - m_impl->last_applied_pitch) >= 0.005f) {
         ma_sound_set_pitch(&m_impl->engine_sound, m_filtered_pitch);
-        last_applied_pitch = m_filtered_pitch;
+        m_impl->last_applied_pitch = m_filtered_pitch;
     }
 }
 
@@ -227,8 +281,11 @@ void DroneSoundManager::update(bool is_armed, bool is_landing, float altitude, f
 }
 
 void DroneSoundManager::stop() {
+    // Tuyệt đối KHÔNG gọi ma_sound_stop()! Giữ node âm thanh luôn chạy ngầm ở volume 0.0
+    // để lượt bay thứ 2, thứ 3... phát lại ngay lập tức mà không bao giờ bị mất tiếng hay khựng.
     if (m_impl && m_impl->sound_loaded) {
         ma_sound_set_volume(&m_impl->engine_sound, 0.0f);
+        m_impl->last_applied_vol = 0.0f;
     }
     m_playing = false;
     m_volume = 0.0f;
@@ -242,6 +299,11 @@ void DroneSoundManager::cleanup() {
             ma_sound_uninit(&m_impl->engine_sound);
             m_impl->sound_loaded = false;
         }
+        if (m_impl->buffer_ready) {
+            ma_audio_buffer_uninit(&m_impl->audio_buf);
+            m_impl->buffer_ready = false;
+        }
+        m_impl->pcm_buffer.clear();
         if (m_impl->engine_ready) {
             ma_engine_uninit(&m_impl->engine);
             m_impl->engine_ready = false;
