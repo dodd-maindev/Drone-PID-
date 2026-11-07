@@ -40,6 +40,7 @@
 #include "math/math_utils.hpp"
 #include "sound/drone_sound.hpp"
 #include "control/waypoint_navigator.hpp"
+#include "utils/data_logger.hpp"
 
 // Cấu trúc gói tin UDP truyền từ Tay cầm Xbox 360
 #pragma pack(push, 1)
@@ -574,6 +575,10 @@ int main(int argc, char** argv) {
     DroneControl::WaypointNavigator waypoint_nav;
     g_mavlink_bridge.set_navigator(&waypoint_nav);
 
+    // Khởi tạo Bộ ghi log bám quỹ đạo TrajectoryLogger phục vụ vẽ đồ thị định lượng
+    DroneUtils::TrajectoryLogger traj_logger;
+    auto traj_start_time = std::chrono::steady_clock::now();
+
     waypoint_nav.set_waypoint_reached_callback([](uint16_t seq) {
         g_mavlink_bridge.send_mission_item_reached(seq);
         std::cout << "\n[🗺️ MISSION] [✓] Đã tới Waypoint #" << seq << " thành công!" << std::endl;
@@ -799,7 +804,8 @@ int main(int argc, char** argv) {
                 gp_yaw_active = true;
             }
 
-            constexpr int DEADZONE = 7800;
+            // Vùng chết (Deadband) chống rung trôi cần analog khi buông tay
+            constexpr int DEADZONE = 9500;
 
             // Con lăn trái (Left Stick X): Điều khiển hướng quay quanh trục (Yaw Rate)
             if (latest_xbox_pkt.thumb_lx > DEADZONE) {
@@ -1100,34 +1106,58 @@ int main(int argc, char** argv) {
         if (req_takeoff)  send_pkt.flags |= CTRL_FLAG_TAKEOFF;
         if (req_land)     send_pkt.flags |= CTRL_FLAG_LAND;
 
-        // 2c. Kiểm tra can thiệp thủ công (Manual Pilot Stick Override)
-        bool manual_stick_moving = gp_pitch_active || kb_pitch_active ||
-                                   gp_roll_active || kb_roll_active ||
-                                   gp_alt_active || kb_alt_active ||
-                                   gp_yaw_active || kb_yaw_active;
-
-        if (manual_stick_moving && waypoint_nav.is_auto_active()) {
-            waypoint_nav.cancel_auto_mode("Manual Stick Override");
-            g_mavlink_bridge.send_statustext("Auto Cancelled: Pilot Stick Active", 6);
-            std::cout << "\n[⚠️ CAN THIỆP THỦ CÔNG] Phi công can thiệp cần lái -> Hủy chế độ bay tự động!" << std::endl;
-        }
-
-        // Nếu KHÔNG chạy cờ --auto, luôn giữ ở MANUAL và chặn can thiệp tự động
+        // 2c. Nếu KHÔNG chạy cờ --auto, luôn giữ ở MANUAL và chặn can thiệp tự động
         if (!auto_mode_enabled && waypoint_nav.is_auto_active()) {
             waypoint_nav.cancel_auto_mode("Manual Mode Enforced");
         }
 
-        // Nếu đang ở chế độ tự động (--auto) và không có thao tác can thiệp:
-        if (auto_mode_enabled && waypoint_nav.is_auto_active() && !manual_stick_moving && flip_phase == PHASE_IDLE) {
+        // 2d. Xử lý điều khiển khi ở chế độ TỰ ĐỘNG (--auto):
+        // Cho phép phi công can thiệp cần lái (Pilot Stick Override/Assist) mà KHÔNG hủy chế độ Auto hay đá QGC về Manual!
+        static bool s_traj_session_done = false;
+        static float s_hold_time_s = 0.0f;
+        if (!is_armed) {
+            s_traj_session_done = false;
+            s_hold_time_s = 0.0f;
+        }
+
+        if (auto_mode_enabled && waypoint_nav.is_auto_active() && flip_phase == PHASE_IDLE) {
             auto nav_cmd = waypoint_nav.update(send_pkt.x, send_pkt.y, send_pkt.z, send_pkt.yaw,
                                                send_pkt.vx, send_pkt.vy, send_pkt.vz, 0.010f);
-            send_pkt.cmd_vx = nav_cmd.cmd_vx;
-            send_pkt.cmd_vy = nav_cmd.cmd_vy;
-            send_pkt.cmd_alt_vel = nav_cmd.cmd_alt_vel;
-            send_pkt.cmd_yaw_rate = nav_cmd.cmd_yaw_rate;
-            if (nav_cmd.is_driving_x) send_pkt.flags |= CTRL_FLAG_DRIVING_X;
-            if (nav_cmd.is_driving_y) send_pkt.flags |= CTRL_FLAG_DRIVING_Y;
-            if (nav_cmd.is_alt_active) send_pkt.flags |= CTRL_FLAG_ALT_ACTIVE;
+
+            // Trục X (Tiến / Lùi): Nếu phi công gạt cần -> Ưu tiên cần lái, nếu buông -> Theo Waypoint
+            if (pitch_active) {
+                send_pkt.cmd_vx = send_cmd_vx;
+                send_pkt.flags |= CTRL_FLAG_DRIVING_X;
+            } else {
+                send_pkt.cmd_vx = nav_cmd.cmd_vx;
+                if (nav_cmd.is_driving_x) send_pkt.flags |= CTRL_FLAG_DRIVING_X;
+            }
+
+            // Trục Y (Trái / Phải):
+            if (roll_active) {
+                send_pkt.cmd_vy = send_cmd_vy;
+                send_pkt.flags |= CTRL_FLAG_DRIVING_Y;
+            } else {
+                send_pkt.cmd_vy = nav_cmd.cmd_vy;
+                if (nav_cmd.is_driving_y) send_pkt.flags |= CTRL_FLAG_DRIVING_Y;
+            }
+
+            // Trục Z (Độ cao):
+            if (alt_active) {
+                send_pkt.cmd_alt_vel = send_cmd_alt;
+                send_pkt.flags |= CTRL_FLAG_ALT_ACTIVE;
+            } else {
+                send_pkt.cmd_alt_vel = nav_cmd.cmd_alt_vel;
+                if (nav_cmd.is_alt_active) send_pkt.flags |= CTRL_FLAG_ALT_ACTIVE;
+            }
+
+            // Trục Yaw:
+            if (yaw_active) {
+                send_pkt.cmd_yaw_rate = send_cmd_yaw;
+            } else {
+                send_pkt.cmd_yaw_rate = nav_cmd.cmd_yaw_rate;
+            }
+
             if (nav_cmd.is_landing) req_land = true;
             if (nav_cmd.is_armed) {
                 if (!is_armed) {
@@ -1139,6 +1169,79 @@ int main(int argc, char** argv) {
             // Nếu đang cất cánh từ mặt đất (z < 0.8m) -> Bật cờ TAKEOFF để ESP32 chuyển ngay sang FLYING
             if (send_pkt.z < 0.80f && nav_cmd.cmd_alt_vel > 0.2f) {
                 send_pkt.flags |= CTRL_FLAG_TAKEOFF;
+            }
+
+            // 2e. Ghi dữ liệu bám quỹ đạo (Trajectory Logging @ 50Hz)
+            if (traj_logger.is_logging()) {
+                static auto last_log_time = std::chrono::steady_clock::now();
+                if (std::chrono::duration<double>(now - last_log_time).count() >= 0.020) {
+                    last_log_time = now;
+                    DroneUtils::TrajectoryLogEntry entry;
+                    entry.time_s = std::chrono::duration<double>(now - traj_start_time).count();
+                    entry.target_x = nav_cmd.target_x;
+                    entry.target_y = nav_cmd.target_y;
+                    entry.target_z = nav_cmd.target_z;
+                    entry.target_yaw_rad = nav_cmd.target_yaw_rad;
+                    entry.target_yaw_deg = nav_cmd.target_yaw_rad * 180.0f / static_cast<float>(M_PI);
+
+                    entry.actual_x = send_pkt.x;
+                    entry.actual_y = send_pkt.y;
+                    entry.actual_z = send_pkt.z;
+                    entry.actual_yaw_rad = send_pkt.yaw;
+                    entry.actual_yaw_deg = send_pkt.yaw * 180.0f / static_cast<float>(M_PI);
+
+                    entry.err_x = send_pkt.x - nav_cmd.target_x;
+                    entry.err_y = send_pkt.y - nav_cmd.target_y;
+                    entry.err_z = send_pkt.z - nav_cmd.target_z;
+                    entry.err_dist_3d = std::sqrt(entry.err_x * entry.err_x + entry.err_y * entry.err_y + entry.err_z * entry.err_z);
+                    entry.err_yaw_deg = (send_pkt.yaw - nav_cmd.target_yaw_rad) * 180.0f / static_cast<float>(M_PI);
+
+                    entry.actual_vx = send_pkt.vx;
+                    entry.actual_vy = send_pkt.vy;
+                    entry.actual_vz = send_pkt.vz;
+                    entry.cmd_vx = send_pkt.cmd_vx;
+                    entry.cmd_vy = send_pkt.cmd_vy;
+                    entry.cmd_alt_vel = send_pkt.cmd_alt_vel;
+                    entry.roll_deg = send_pkt.roll * 180.0f / static_cast<float>(M_PI);
+                    entry.pitch_deg = send_pkt.pitch * 180.0f / static_cast<float>(M_PI);
+
+                    entry.w0 = last_motor_w0;
+                    entry.w1 = last_motor_w1;
+                    entry.w2 = last_motor_w2;
+                    entry.w3 = last_motor_w3;
+                    entry.wp_seq = nav_cmd.target_wp_seq;
+                    entry.nav_mode = static_cast<int>(waypoint_nav.get_nav_mode());
+
+                    traj_logger.log(entry);
+                }
+
+                // Nếu đã hoàn thành toàn bộ lộ trình và đang ở chế độ HOLD khóa vị trí đích quá 3 giây:
+                // Tự động chốt dữ liệu log và xuất báo cáo quỹ đạo chuẩn khoa học!
+                if (waypoint_nav.get_nav_mode() == DroneControl::NavMode::HOLD) {
+                    s_hold_time_s += 0.010f;
+                    if (s_hold_time_s >= 3.0f && !s_traj_session_done) {
+                        s_traj_session_done = true;
+                        traj_logger.stop();
+                        std::cout << "\n[📊 TRAJECTORY] Đã khóa chốt vị trí đích ổn định! Tự động tạo đồ thị bám quỹ đạo..." << std::endl;
+                        int ret = system("python3 scripts/plot_trajectory.py logs/trajectory/latest_trajectory.csv > /dev/null 2>&1 &");
+                        (void)ret;
+                    }
+                } else {
+                    s_hold_time_s = 0.0f;
+                }
+            } else if (is_armed && send_pkt.z >= 0.5f && !s_traj_session_done) {
+                // Tự động khởi tạo file log ngay khi drone rời mặt đất
+                traj_logger.start("logs/trajectory", "traj");
+                traj_start_time = now;
+            }
+        } else {
+            // Khi dừng chế độ auto (hoặc hoàn thành nhiệm vụ)
+            if (traj_logger.is_logging()) {
+                s_traj_session_done = true;
+                traj_logger.stop();
+                std::cout << "[📊 TRAJECTORY] Tự động tạo đồ thị phân tích bám quỹ đạo..." << std::endl;
+                int ret = system("python3 scripts/plot_trajectory.py logs/trajectory/latest_trajectory.csv > /dev/null 2>&1 &");
+                (void)ret;
             }
         }
 
@@ -1455,6 +1558,13 @@ int main(int argc, char** argv) {
 
         // Tần số gửi 100Hz (10ms)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (traj_logger.is_logging()) {
+        traj_logger.stop();
+        std::cout << "\n[📊 TRAJECTORY] Tự động xuất đồ thị bám quỹ đạo lần cuối..." << std::endl;
+        int ret = system("python3 scripts/plot_trajectory.py logs/trajectory/latest_trajectory.csv > /dev/null 2>&1 &");
+        (void)ret;
     }
 
     set_nonblocking_terminal(false);

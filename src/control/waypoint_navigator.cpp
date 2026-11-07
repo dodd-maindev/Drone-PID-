@@ -144,6 +144,11 @@ void WaypointNavigator::start_mission() {
             start_seq = current_seq_;
             is_holding_at_wp_ = false;
             hold_timer_ = 0.0f;
+            segment_started_ = false;
+            segment_time_ = 0.0f;
+            prev_e_ct_ = 0.0f;
+            d_e_ct_filtered_ = 0.0f;
+            virtual_yaw_initialized_ = false;
             nav_mode_ = NavMode::MISSION;
             count = waypoints_.size();
             seq_cb = current_seq_cb_;
@@ -170,13 +175,18 @@ void WaypointNavigator::start_guided_reposition(float target_x, float target_y, 
         guided_target_.y = target_y;
         guided_target_.z = std::max(0.5f, target_z);
         guided_target_.yaw_deg = yaw_deg;
-        guided_target_.accept_radius = 1.0f;
+        guided_target_.accept_radius = 0.85f;
         guided_target_.hold_time = 0.0f;
         local_to_gps(target_x, target_y, target_z, guided_target_.lat, guided_target_.lon, guided_target_.z);
 
         nav_mode_ = NavMode::GUIDED;
         is_holding_at_wp_ = false;
         hold_timer_ = 0.0f;
+        segment_started_ = false;
+        segment_time_ = 0.0f;
+        prev_e_ct_ = 0.0f;
+        d_e_ct_filtered_ = 0.0f;
+        virtual_yaw_initialized_ = false;
         stat_cb = status_cb_;
     }
 
@@ -199,6 +209,7 @@ void WaypointNavigator::cancel_auto_mode(const std::string& reason) {
             nav_mode_ = NavMode::MANUAL;
             is_holding_at_wp_ = false;
             hold_timer_ = 0.0f;
+            virtual_yaw_initialized_ = false;
             was_active = true;
         }
     }
@@ -215,6 +226,35 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
 
     if (nav_mode_ == NavMode::MANUAL) {
         cmd.status_text = "MANUAL";
+        return cmd;
+    }
+
+    if (nav_mode_ == NavMode::HOLD) {
+        // Chế độ khóa vị trí chủ động tại đích đến (Active Hold Target - Triệt tiêu 100% hiện tượng trôi máy bay)
+        float dx = hold_target_x_ - cur_x;
+        float dy = hold_target_y_ - cur_y;
+        float dz = hold_target_z_ - cur_z;
+        float dist_xy = std::sqrt(dx * dx + dy * dy);
+
+        float cy = std::cos(cur_yaw);
+        float sy = std::sin(cur_yaw);
+        float v_world_x = std::clamp(1.2f * dx, -0.90f, 0.90f);
+        float v_world_y = std::clamp(1.2f * dy, -0.90f, 0.90f);
+
+        cmd.cmd_vx =  cy * v_world_x + sy * v_world_y;
+        cmd.cmd_vy = -sy * v_world_x + cy * v_world_y;
+        cmd.cmd_alt_vel = std::clamp(1.0f * dz, -0.6f, 0.6f);
+        cmd.cmd_yaw_rate = 0.0f;
+        cmd.is_driving_x = (dist_xy > 0.05f);
+        cmd.is_driving_y = (dist_xy > 0.05f);
+        cmd.is_alt_active = (std::abs(dz) > 0.05f);
+        cmd.is_yaw_active = false;
+        cmd.has_target = true;
+        cmd.target_x = hold_target_x_;
+        cmd.target_y = hold_target_y_;
+        cmd.target_z = hold_target_z_;
+        cmd.target_yaw_rad = virtual_target_yaw_;
+        cmd.status_text = "MISSION COMPLETE (ACTIVE HOLD)";
         return cmd;
     }
 
@@ -239,10 +279,18 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
                 target_wp = waypoints_[current_seq_];
                 has_target = true;
             } else {
-                // Đã hoàn thành hết tất cả waypoints
-                nav_mode_ = NavMode::MANUAL;
-                std::cout << "\n[Navigator] [✓ HOÀN THÀNH] Toàn bộ lộ trình đã hoàn tất!" << std::endl;
-                if (status_cb_) status_cb_("Mission Completed! Holding at destination", 6);
+                // Đã hoàn thành hết tất cả waypoints -> Khóa giữ vị trí đích chủ động
+                hold_target_x_ = !waypoints_.empty() ? waypoints_.back().x : cur_x;
+                hold_target_y_ = !waypoints_.empty() ? waypoints_.back().y : cur_y;
+                hold_target_z_ = !waypoints_.empty() ? waypoints_.back().z : cur_z;
+                nav_mode_ = NavMode::HOLD;
+                std::cout << "\n[Navigator] [✓ HOÀN THÀNH] Toàn bộ lộ trình đã hoàn tất! Chuyển sang ACTIVE HOLD khóa vị trí đích." << std::endl;
+                if (status_cb_) status_cb_("Mission Completed! Active Holding at destination", 6);
+                cmd.has_target = true;
+                cmd.target_x = hold_target_x_;
+                cmd.target_y = hold_target_y_;
+                cmd.target_z = hold_target_z_;
+                cmd.target_yaw_rad = virtual_target_yaw_;
                 cmd.status_text = "MISSION COMPLETE (HOLD)";
                 return cmd;
             }
@@ -255,6 +303,23 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
         return cmd;
     }
 
+    // Bắt đầu ghi nhận mốc đoạn đường mới nếu chưa có
+    if (!segment_started_) {
+        if (nav_mode_ == NavMode::MISSION && current_seq_ > 0 && current_seq_ - 1 < waypoints_.size()) {
+            segment_start_x_ = waypoints_[current_seq_ - 1].x;
+            segment_start_y_ = waypoints_[current_seq_ - 1].y;
+            segment_start_z_ = waypoints_[current_seq_ - 1].z;
+        } else {
+            segment_start_x_ = cur_x;
+            segment_start_y_ = cur_y;
+            segment_start_z_ = cur_z;
+        }
+        segment_time_ = 0.0f;
+        segment_started_ = true;
+        prev_e_ct_ = 0.0f;
+        d_e_ct_filtered_ = 0.0f;
+    }
+
     // 1. Chuẩn hóa tham số Waypoint (chống NaN từ QGC và giới hạn trần bay 10m của ESP32)
     bool is_final_wp = (nav_mode_ == NavMode::GUIDED) ||
                        (current_seq_ + 1 >= waypoints_.size()) ||
@@ -263,9 +328,11 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
 
     float target_z = (std::isnan(target_wp.z) || target_wp.z < 1.0f) ? 3.5f : std::min(target_wp.z, 9.5f);
     float eff_hold = (std::isnan(target_wp.hold_time) || target_wp.hold_time <= 0.05f) ? 0.0f : target_wp.hold_time;
-    // Đối với Waypoint trung gian: dùng bán kính chuyển góc 2.5m để nối đoạn mượt.
-    // Đối với Waypoint cuối / Return (cmd=20) / Guided: dùng bán kính 0.60m để drone bay vào đúng tâm điểm H rồi dừng hẳn!
-    float effective_radius = is_final_wp ? 0.60f : ((std::isnan(target_wp.accept_radius) || target_wp.accept_radius < 2.5f) ? 2.5f : target_wp.accept_radius);
+    // Bán kính chuyển góc cua chặt chẽ (0.75m để drone chạm vào đỉnh góc cua, 0.45m cho điểm kết thúc)
+    float default_radius = is_final_wp ? 0.45f : 0.75f;
+    float effective_radius = (std::isnan(target_wp.accept_radius) || target_wp.accept_radius < 0.4f)
+                             ? default_radius
+                             : std::min(target_wp.accept_radius, 0.85f);
 
     // Tính toán sai lệch khoảng cách tới Waypoint
     float dx = target_wp.x - cur_x;
@@ -316,15 +383,17 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
         // Nếu là lệnh Return To Launch (MAV_CMD_NAV_RETURN_TO_LAUNCH = 20) -> Dừng giữ vị trí ngay tại điểm Return (H)!
         if (target_wp.command == 20) {
             if (reached_cb_) reached_cb_(target_wp.seq);
-            nav_mode_ = NavMode::MANUAL;
-            std::cout << "\n[Navigator] [✓ RETURN REACHED] Đã quay về vị trí Return (Home) và dừng giữ vị trí!" << std::endl;
-            if (status_cb_) status_cb_("Returned to Home! Holding position", 6);
-            cmd.cmd_vx = 0.0f;
-            cmd.cmd_vy = 0.0f;
-            cmd.cmd_alt_vel = 0.0f;
-            cmd.cmd_yaw_rate = 0.0f;
-            cmd.is_driving_x = false;
-            cmd.is_driving_y = false;
+            hold_target_x_ = target_wp.x;
+            hold_target_y_ = target_wp.y;
+            hold_target_z_ = target_z;
+            nav_mode_ = NavMode::HOLD;
+            std::cout << "\n[Navigator] [✓ RETURN REACHED] Đã quay về vị trí Return (Home) và khóa giữ vị trí!" << std::endl;
+            if (status_cb_) status_cb_("Returned to Home! Active Holding position", 6);
+            cmd.has_target = true;
+            cmd.target_x = hold_target_x_;
+            cmd.target_y = hold_target_y_;
+            cmd.target_z = hold_target_z_;
+            cmd.target_yaw_rad = virtual_target_yaw_;
             cmd.status_text = "RETURN COMPLETE (HOLD)";
             return cmd;
         }
@@ -360,16 +429,35 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
             if (seq_cb) seq_cb(next_seq);
 
             if (mission_completed) {
-                nav_mode_ = NavMode::MANUAL;
-                std::cout << "\n[Navigator] [✓ HOÀN THÀNH] Toàn bộ lộ trình đã hoàn tất!" << std::endl;
-                if (status_cb_) status_cb_("Mission Completed! Holding at destination", 6);
-                cmd.cmd_vx = 0.0f;
-                cmd.cmd_vy = 0.0f;
-                cmd.is_driving_x = false;
-                cmd.is_driving_y = false;
+                hold_target_x_ = target_wp.x;
+                hold_target_y_ = target_wp.y;
+                hold_target_z_ = target_z;
+                nav_mode_ = NavMode::HOLD;
+                std::cout << "\n[Navigator] [✓ HOÀN THÀNH] Toàn bộ lộ trình đã hoàn tất! Khóa giữ vị trí đích." << std::endl;
+                if (status_cb_) status_cb_("Mission Completed! Active Holding at destination", 6);
+                cmd.has_target = true;
+                cmd.target_x = hold_target_x_;
+                cmd.target_y = hold_target_y_;
+                cmd.target_z = hold_target_z_;
+                cmd.target_yaw_rad = virtual_target_yaw_;
                 cmd.status_text = "MISSION COMPLETE (HOLD)";
                 return cmd;
             }
+
+            // Ghi nhận mốc điểm bắt đầu cho đoạn đường mới từ chính xác tọa độ Waypoint trước đó
+            if (next_seq > 0 && next_seq - 1 < waypoints_.size()) {
+                segment_start_x_ = waypoints_[next_seq - 1].x;
+                segment_start_y_ = waypoints_[next_seq - 1].y;
+                segment_start_z_ = waypoints_[next_seq - 1].z;
+            } else {
+                segment_start_x_ = cur_x;
+                segment_start_y_ = cur_y;
+                segment_start_z_ = cur_z;
+            }
+            segment_time_ = 0.0f;
+            segment_started_ = true;
+            prev_e_ct_ = 0.0f;
+            d_e_ct_filtered_ = 0.0f;
 
             std::cout << "[Navigator] [➡️ TIẾP THEO] Chuyển tiếp tức thì sang Waypoint #" << (next_seq + 1) << "..." << std::endl;
             // Cập nhật lại vector khoảng cách tới waypoint mới để bay liên tục không khựng
@@ -394,6 +482,19 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
                     seq_cb = current_seq_cb_;
                 }
                 if (seq_cb) seq_cb(next_seq);
+                if (next_seq > 0 && next_seq - 1 < waypoints_.size()) {
+                    segment_start_x_ = waypoints_[next_seq - 1].x;
+                    segment_start_y_ = waypoints_[next_seq - 1].y;
+                    segment_start_z_ = waypoints_[next_seq - 1].z;
+                } else {
+                    segment_start_x_ = cur_x;
+                    segment_start_y_ = cur_y;
+                    segment_start_z_ = cur_z;
+                }
+                segment_time_ = 0.0f;
+                segment_started_ = true;
+                prev_e_ct_ = 0.0f;
+                d_e_ct_filtered_ = 0.0f;
                 std::cout << "[Navigator] [➡️ TIẾP THEO] Chuyển tiếp sang Waypoint #" << (next_seq + 1) << "..." << std::endl;
             }
 
@@ -428,20 +529,96 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
         return cmd;
     }
 
-    // 3. Quy luật điều khiển vận tốc bám đường thẳng tuyệt đối (Straight-Line Unit-Vector Profile)
-    // Giữ nguyên tỷ lệ hướng (ux, uy) trên toàn bộ hành trình để quỹ đạo nối giữa các Waypoint thẳng tắp 100%!
+    // 3. Quy luật điều khiển bám tim đường thẳng tuyệt đối có Giảm chấn tới hạn (Critically Damped Line Following)
+    float seg_dx = target_wp.x - segment_start_x_;
+    float seg_dy = target_wp.y - segment_start_y_;
+    float seg_len = std::sqrt(seg_dx * seg_dx + seg_dy * seg_dy);
+
+    // Quản lý góc hướng Yaw bằng Setpoint Profiler (Hướng mũi luôn bay dọc theo tim đường của từng chặng)
+    if (!virtual_yaw_initialized_) {
+        virtual_target_yaw_ = cur_yaw;
+        virtual_yaw_initialized_ = true;
+    }
+
+    float desired_yaw = (target_wp.yaw_deg > 0.05f)
+                        ? (target_wp.yaw_deg * static_cast<float>(M_PI) / 180.0f)
+                        : ((seg_len > 0.5f) ? std::atan2(seg_dy, seg_dx) : virtual_target_yaw_);
+
+    // Tính sai số giữa hướng mục tiêu và góc đặt nội suy
+    float err_target_yaw = normalize_angle(desired_yaw - virtual_target_yaw_);
+    const float max_turn_rate = 0.50f; // rad/s (~28 deg/s) - êm dịu, không tạo lực ly tâm
+    float yaw_rate_cmd = 0.0f;
+    if (std::abs(err_target_yaw) > 0.025f) { // Vùng chết 1.4 độ
+        yaw_rate_cmd = std::clamp(1.5f * err_target_yaw, -max_turn_rate, max_turn_rate);
+        virtual_target_yaw_ = normalize_angle(virtual_target_yaw_ + yaw_rate_cmd * dt);
+        cmd.is_yaw_active = true;
+    } else {
+        yaw_rate_cmd = 0.0f;
+        cmd.is_yaw_active = false;
+    }
+    cmd.cmd_yaw_rate = yaw_rate_cmd;
+
+    // Giảm tốc độ góc cua khi đang xoay đầu để drone ôm cua sắc nét, triệt tiêu quán tính văng ly tâm:
+    float err_yaw_actual = normalize_angle(virtual_target_yaw_ - cur_yaw);
+    float heading_align = std::clamp(std::cos(err_yaw_actual), 0.40f, 1.0f);
+
     float cruise_speed = max_horizontal_speed_;
+    // Khi đến gần góc cua trong bán kính 2.5m, hãm tốc độ để ôm cua mượt mà, không bị vọt lố hay cắt góc
+    float corner_approach_speed = std::clamp(0.65f * dist_xy, 0.40f, cruise_speed);
     float target_speed = is_final_wp
-                         ? ((dist_xy > 4.0f) ? cruise_speed : (0.55f * dist_xy))
-                         : ((dist_xy > 3.0f) ? cruise_speed : (0.80f * dist_xy));
-    target_speed = std::clamp(target_speed, 0.05f, cruise_speed);
+                         ? ((dist_xy > 3.0f) ? cruise_speed : (0.50f * dist_xy))
+                         : corner_approach_speed;
+    target_speed = std::clamp(target_speed, 0.10f, cruise_speed) * heading_align;
 
     float ux = (dist_xy > 0.001f) ? (dx / dist_xy) : 0.0f;
     float uy = (dist_xy > 0.001f) ? (dy / dist_xy) : 0.0f;
-    float v_world_x = target_speed * ux;
-    float v_world_y = target_speed * uy;
 
-    // Chuyển đổi sang hệ trục thân máy bay đồng nhất 100% với PositionController của ESP32 (firmware_esp32.ino dòng 220 & 259):
+    float v_world_x = 0.0f;
+    float v_world_y = 0.0f;
+
+    if (seg_len >= 1.0f) {
+        // Vector đơn vị dọc tim đường thẳng nối 2 Waypoint
+        float line_ux = seg_dx / seg_len;
+        float line_uy = seg_dy / seg_len;
+        // Vector pháp tuyến vuông góc tim đường (hướng sang trái)
+        float line_nx = -line_uy;
+        float line_ny = line_ux;
+
+        // Tính độ lệch vuông góc khỏi tim đường (Cross-Track Error)
+        float p_x = cur_x - segment_start_x_;
+        float p_y = cur_y - segment_start_y_;
+        float e_ct = p_x * line_nx + p_y * line_ny;
+
+        // Tính đạo hàm tốc độ rời xa/tiến lại tim đường để làm thành phần giảm chấn vi phân (Damping)
+        float raw_d_e_ct = (dt > 0.001f) ? ((e_ct - prev_e_ct_) / dt) : 0.0f;
+        prev_e_ct_ = e_ct;
+        d_e_ct_filtered_ = 0.75f * d_e_ct_filtered_ + 0.25f * raw_d_e_ct;
+
+        // Bộ điều khiển PD bám tim đường có giảm chấn tới hạn (Critically Damped):
+        // - Kp kéo drone về tim đường
+        // - Kd phanh tốc độ trôi ngang khi drone tiến sát tim đường, triệt tiêu 100% hiện tượng lắc võng (snaking)
+        float Kp_ct = 0.45f;
+        float Kd_ct = 0.30f;
+        float v_cross = -Kp_ct * e_ct - Kd_ct * d_e_ct_filtered_;
+        v_cross = std::clamp(v_cross, -0.35f, 0.35f);
+
+        float v_along = target_speed;
+        v_world_x = v_along * line_ux + v_cross * line_nx;
+        v_world_y = v_along * line_uy + v_cross * line_ny;
+
+        // Quỹ đạo lý thuyết nội suy liên tục theo thời gian (Continuous Ramp Reference Trajectory)
+        segment_time_ += dt;
+        float s_exp = std::min(segment_time_ * (cruise_speed * 0.90f), seg_len);
+        cmd.target_x = segment_start_x_ + s_exp * line_ux;
+        cmd.target_y = segment_start_y_ + s_exp * line_uy;
+    } else {
+        v_world_x = target_speed * ux;
+        v_world_y = target_speed * uy;
+        cmd.target_x = target_wp.x;
+        cmd.target_y = target_wp.y;
+    }
+
+    // Chuyển đổi sang hệ trục thân máy bay đồng nhất 100% với PositionController của ESP32:
     //   err_xb =  cy * err_x_w + sy * err_y_w
     //   err_yb = -sy * err_x_w + cy * err_y_w
     float cy = std::cos(cur_yaw);
@@ -451,24 +628,16 @@ NavCommand WaypointNavigator::update(float cur_x, float cur_y, float cur_z, floa
     cmd.is_driving_x = true;
     cmd.is_driving_y = true;
 
-    // 4. Điều khiển vận tốc độ cao (Vertical Climb / Descent)
+    // 5. Điều khiển vận tốc độ cao (Vertical Climb / Descent)
     cmd.cmd_alt_vel = std::clamp(0.95f * dz, -max_descent_speed_, max_climb_speed_);
     cmd.is_alt_active = (std::abs(dz) > 0.08f);
 
-    // 5. Tự động quay mũi drone nhìn về hướng Waypoint (Heading Alignment)
-    // Chỉ xoay hướng khi còn ở xa (> 3.0m). Khi vào gần (< 3.0m), KHÓA CHẶT YAW
-    // để loại bỏ hoàn toàn hiện tượng điểm kỳ dị (singularity at dist -> 0) làm drone quay mòng mòng quanh tâm!
-    if (dist_xy > 3.0f) {
-        float desired_yaw = std::atan2(dy, dx);
-        float err_yaw = normalize_angle(desired_yaw - cur_yaw);
-        cmd.cmd_yaw_rate = std::clamp(1.0f * err_yaw, -0.75f, 0.75f);
-        cmd.is_yaw_active = (std::abs(err_yaw) > 0.08f);
-    } else {
-        cmd.cmd_yaw_rate = 0.0f;
-        cmd.is_yaw_active = false;
-    }
+    // 6. Hiển thị trạng thái & Ghi nhận quỹ đạo mong muốn
+    cmd.target_z = target_z;
+    cmd.target_yaw_rad = virtual_target_yaw_;
+    cmd.target_wp_seq = target_wp.seq;
+    cmd.has_target = true;
 
-    // 6. Hiển thị trạng thái
     std::ostringstream ss;
     if (nav_mode_ == NavMode::GUIDED) {
         ss << "GUIDED -> (" << std::fixed << std::setprecision(1) << target_wp.x << ", " 

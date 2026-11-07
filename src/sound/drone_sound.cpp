@@ -105,6 +105,7 @@ bool DroneSoundManager::init(const std::string& audio_dir) {
 
             ma_audio_buffer_config buf_cfg = ma_audio_buffer_config_init(
                 ma_format_f32, 1, loop_frames, m_impl->pcm_buffer.data(), NULL);
+            buf_cfg.sampleRate = static_cast<ma_uint32>(sample_rate);
             res = ma_audio_buffer_init(&buf_cfg, &m_impl->audio_buf);
             if (res == MA_SUCCESS) {
                 m_impl->buffer_ready = true;

@@ -125,4 +125,138 @@ void DataLogger::stop() {
     std::cout << "  -> File mới nhất: " << latest_log_path_ << std::endl;
 }
 
+// ============================================================================
+// TRAJECTORY LOGGER IMPLEMENTATION
+// ============================================================================
+TrajectoryLogger::TrajectoryLogger() = default;
+
+TrajectoryLogger::~TrajectoryLogger() {
+    stop();
+}
+
+bool TrajectoryLogger::start(const std::string& log_dir, const std::string& prefix) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (is_logging_) {
+        return true;
+    }
+
+    try {
+        std::filesystem::create_directories(log_dir);
+
+        auto now = std::chrono::system_clock::now();
+        std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+        std::tm tm_now{};
+        localtime_r(&now_c, &tm_now);
+
+        std::ostringstream filename_oss;
+        filename_oss << prefix << "_"
+                     << std::put_time(&tm_now, "%Y%m%d_%H%M%S")
+                     << ".csv";
+
+        current_log_path_ = log_dir + "/" + filename_oss.str();
+        latest_log_path_  = log_dir + "/latest_trajectory.csv";
+
+        file_.open(current_log_path_, std::ios::out | std::ios::trunc);
+        if (!file_.is_open()) {
+            std::cerr << "[TrajectoryLogger] [!] Không thể tạo file log tại: " << current_log_path_ << std::endl;
+            return false;
+        }
+
+        // Header CSV đầy đủ cho bám quỹ đạo lý thuyết vs thực tế
+        file_ << "time_s,"
+              << "target_x,target_y,target_z,target_yaw_rad,target_yaw_deg,"
+              << "actual_x,actual_y,actual_z,actual_yaw_rad,actual_yaw_deg,"
+              << "err_x,err_y,err_z,err_dist_3d,err_yaw_deg,"
+              << "actual_vx,actual_vy,actual_vz,"
+              << "cmd_vx,cmd_vy,cmd_alt_vel,"
+              << "roll_deg,pitch_deg,"
+              << "w0,w1,w2,w3,"
+              << "wp_seq,nav_mode\n";
+
+        is_logging_ = true;
+        records_count_ = 0;
+
+        std::cout << "[TrajectoryLogger] [📊 LOG BÁM QUỸ ĐẠO BẮT ĐẦU]: " << current_log_path_ << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[TrajectoryLogger] [!] Lỗi khởi tạo: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+void TrajectoryLogger::log(const TrajectoryLogEntry& entry) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_logging_ || !file_.is_open()) {
+        return;
+    }
+
+    file_ << std::fixed << std::setprecision(4)
+          << entry.time_s << ","
+          << entry.target_x << ","
+          << entry.target_y << ","
+          << entry.target_z << ","
+          << entry.target_yaw_rad << ","
+          << entry.target_yaw_deg << ","
+          << entry.actual_x << ","
+          << entry.actual_y << ","
+          << entry.actual_z << ","
+          << entry.actual_yaw_rad << ","
+          << entry.actual_yaw_deg << ","
+          << entry.err_x << ","
+          << entry.err_y << ","
+          << entry.err_z << ","
+          << entry.err_dist_3d << ","
+          << entry.err_yaw_deg << ","
+          << entry.actual_vx << ","
+          << entry.actual_vy << ","
+          << entry.actual_vz << ","
+          << entry.cmd_vx << ","
+          << entry.cmd_vy << ","
+          << entry.cmd_alt_vel << ","
+          << entry.roll_deg << ","
+          << entry.pitch_deg << ","
+          << entry.w0 << ","
+          << entry.w1 << ","
+          << entry.w2 << ","
+          << entry.w3 << ","
+          << entry.wp_seq << ","
+          << entry.nav_mode << "\n";
+
+    records_count_++;
+}
+
+void TrajectoryLogger::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_logging_) {
+        return;
+    }
+
+    if (file_.is_open()) {
+        file_.flush();
+        file_.close();
+    }
+    is_logging_ = false;
+
+    // Sao chép sang latest_trajectory.csv và đồng bộ sang DroneHITL/logs/trajectory
+    try {
+        std::filesystem::copy_file(
+            current_log_path_, latest_log_path_,
+            std::filesystem::copy_options::overwrite_existing
+        );
+
+        std::string win_copy_dir = "DroneHITL/logs/trajectory";
+        std::filesystem::create_directories(win_copy_dir);
+        std::filesystem::copy_file(
+            latest_log_path_, win_copy_dir + "/latest_trajectory.csv",
+            std::filesystem::copy_options::overwrite_existing
+        );
+    } catch (...) {
+    }
+
+    std::cout << "\n[TrajectoryLogger] [✓ HOÀN TẤT GHI QUỸ ĐẠO]: Đã lưu " << records_count_ << " mẫu log!" << std::endl;
+    std::cout << "  📁 File chi tiết: " << current_log_path_ << std::endl;
+    std::cout << "  📁 File mới nhất: " << latest_log_path_ << std::endl;
+}
+
 } // namespace DroneUtils

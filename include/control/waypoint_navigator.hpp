@@ -33,7 +33,8 @@ enum class NavMode {
     MANUAL = 0,            // Thủ công (Phi công lái bằng tay cầm / phím)
     GUIDED = 1,            // Chỉ điểm bay ngay (Click & Fly / Reposition)
     MISSION = 2,           // Bay tự động theo danh sách Waypoints
-    AUTO_LAND = 3          // Tự động hạ cánh
+    AUTO_LAND = 3,         // Tự động hạ cánh
+    HOLD = 4               // Giữ vị trí tại chỗ chủ động sau khi hoàn thành nhiệm vụ (Chống trôi)
 };
 
 /**
@@ -51,6 +52,14 @@ struct NavCommand {
     bool is_armed{true};
     bool is_landing{false};
     std::string status_text;
+
+    // Tọa độ mục tiêu lý thuyết (Expected Reference Trajectory)
+    float target_x{0.0f};
+    float target_y{0.0f};
+    float target_z{0.0f};
+    float target_yaw_rad{0.0f};
+    uint16_t target_wp_seq{0};
+    bool has_target{false};
 };
 
 /**
@@ -124,6 +133,24 @@ private:
     float max_horizontal_speed_{2.2f}; // m/s
     float max_climb_speed_{1.2f};      // m/s
     float max_descent_speed_{0.8f};    // m/s
+
+    // Điểm bắt đầu và tiến trình của đoạn đường hiện tại (Segment Tracking)
+    float segment_start_x_{0.0f};
+    float segment_start_y_{0.0f};
+    float segment_start_z_{0.0f};
+    float segment_time_{0.0f};
+    bool segment_started_{false};
+    float prev_e_ct_{0.0f};
+    float d_e_ct_filtered_{0.0f};
+
+    // Quản lý góc Yaw tham chiếu mượt mà (Setpoint Profiler - Triệt tiêu hoàn toàn dao động tự kích)
+    float virtual_target_yaw_{0.0f};
+    bool virtual_yaw_initialized_{false};
+
+    // Tọa độ chốt giữ vị trí chủ động sau khi hoàn thành nhiệm vụ (Active Hold Target)
+    float hold_target_x_{0.0f};
+    float hold_target_y_{0.0f};
+    float hold_target_z_{3.5f};
 
     // Callbacks
     std::function<void(uint16_t)> reached_cb_{nullptr};
