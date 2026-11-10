@@ -188,7 +188,7 @@ namespace FlightConfig {
         constexpr float KP_POS                   = 1.2f;
 
         // Vận tốc tiếp cận tối đa khi tự động bò về tâm neo (m/s)
-        constexpr float MAX_APPROACH_VEL         = 0.60f;
+        constexpr float MAX_APPROACH_VEL         = 1.20f;
 
         // Vùng trơ điểm neo (m) - Bán kính 3.5cm: Ở trong vùng này khóa chết target_v = 0,
         // chỉ kích hoạt giảm chấn vận tốc để triệt tiêu 100% hiện tượng lắc lư qua lại quanh tâm!
@@ -211,10 +211,10 @@ namespace FlightConfig {
         constexpr float MAX_WIND_ACCEL           = 2.2f;
 
         // Giới hạn gia tốc lệnh người lái (m/s^2) - Giúp drone tăng tốc mượt mà, không giật ga
-        constexpr float MAX_CMD_ACCEL            = 3.0f;
+        constexpr float MAX_CMD_ACCEL            = 5.0f;
 
         // Góc nghiêng thân cực đại khi người lái điều khiển bay tiến/lùi/trái/phải (độ)
-        constexpr float MAX_TILT_DRIVING_DEG     = 12.0f;
+        constexpr float MAX_TILT_DRIVING_DEG     = 20.0f;
 
         // Góc ngả ngược tối đa khi kích hoạt PHANH CHỦ ĐỘNG (Braking tilt) (độ)
         // 8 độ đảm bảo hãm dừng êm ái, trôi ít nhất có thể mà không bị nảy ngược!

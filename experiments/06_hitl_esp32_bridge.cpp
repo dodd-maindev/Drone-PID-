@@ -622,7 +622,7 @@ int main(int argc, char** argv) {
         is_armed = arm;
         std::cout << "\n[📡 QGC] Nhận lệnh từ QGroundControl: " << (arm ? "ARM (MỞ KHÓA)" : "DISARM (KHÓA)") << std::endl;
     });
-    float max_speed_mps = 2.5f;
+    float max_speed_mps = 4.5f; // Mặc định 4.5 m/s (16.2 km/h) - Nhanh, linh hoạt tiệm cận PX4
     float target_vx_cmd = 0.0f;
     float target_vy_cmd = 0.0f;
     float alt_vel_cmd = 0.0f;
@@ -809,43 +809,109 @@ int main(int argc, char** argv) {
 
             // Con lăn trái (Left Stick X): Điều khiển hướng quay quanh trục (Yaw Rate)
             if (latest_xbox_pkt.thumb_lx > DEADZONE) {
-                gp_yaw_rate = -static_cast<float>(latest_xbox_pkt.thumb_lx - DEADZONE) / (32767.0f - DEADZONE) * 1.5f;
+                gp_yaw_rate = -static_cast<float>(latest_xbox_pkt.thumb_lx - DEADZONE) / (32767.0f - DEADZONE) * 1.8f;
                 gp_yaw_active = true;
             } else if (latest_xbox_pkt.thumb_lx < -DEADZONE) {
-                gp_yaw_rate = static_cast<float>(-latest_xbox_pkt.thumb_lx - DEADZONE) / (32768.0f - DEADZONE) * 1.5f;
+                gp_yaw_rate = static_cast<float>(-latest_xbox_pkt.thumb_lx - DEADZONE) / (32768.0f - DEADZONE) * 1.8f;
                 gp_yaw_active = true;
             }
 
             // Con lăn trái (Left Stick Y): Điều khiển ĐỘ CAO (Cất cánh / Tăng ga / Hạ ga)
             if (latest_xbox_pkt.thumb_ly > DEADZONE) {
-                gp_alt_vel = static_cast<float>(latest_xbox_pkt.thumb_ly - DEADZONE) / (32767.0f - DEADZONE) * 1.5f;
+                gp_alt_vel = static_cast<float>(latest_xbox_pkt.thumb_ly - DEADZONE) / (32767.0f - DEADZONE) * 2.0f;
                 gp_alt_active = true;
                 req_takeoff = false;
                 req_land = false;
             } else if (latest_xbox_pkt.thumb_ly < -DEADZONE) {
-                gp_alt_vel = static_cast<float>(latest_xbox_pkt.thumb_ly + DEADZONE) / (32768.0f - DEADZONE) * 1.2f;
+                gp_alt_vel = static_cast<float>(latest_xbox_pkt.thumb_ly + DEADZONE) / (32768.0f - DEADZONE) * 1.5f;
                 gp_alt_active = true;
                 req_takeoff = false;
             }
 
-            // Con lăn phải (Right Stick Y): Tiến / Lùi (Pitch)
+            // Con lăn phải (Right Stick Y & X): Tiến / Lùi / Trái / Phải
+            float norm_ry = 0.0f;
             if (latest_xbox_pkt.thumb_ry > DEADZONE) {
-                gp_vx = static_cast<float>(latest_xbox_pkt.thumb_ry - DEADZONE) / (32767.0f - DEADZONE) * max_speed_mps;
-                gp_pitch_active = true;
+                norm_ry = static_cast<float>(latest_xbox_pkt.thumb_ry - DEADZONE) / (32767.0f - DEADZONE);
             } else if (latest_xbox_pkt.thumb_ry < -DEADZONE) {
-                gp_vx = static_cast<float>(latest_xbox_pkt.thumb_ry + DEADZONE) / (32768.0f - DEADZONE) * max_speed_mps;
-                gp_pitch_active = true;
+                norm_ry = static_cast<float>(latest_xbox_pkt.thumb_ry + DEADZONE) / (32768.0f - DEADZONE);
             }
 
-            // Con lăn phải (Right Stick X): Phải / Trái (Roll)
-            // Trong hệ tọa độ thân: Trái là +Vy, Phải là -Vy
+            float norm_rx = 0.0f;
             if (latest_xbox_pkt.thumb_rx > DEADZONE) {
-                gp_vy = -static_cast<float>(latest_xbox_pkt.thumb_rx - DEADZONE) / (32767.0f - DEADZONE) * max_speed_mps;
-                gp_roll_active = true;
+                norm_rx = static_cast<float>(latest_xbox_pkt.thumb_rx - DEADZONE) / (32767.0f - DEADZONE);
             } else if (latest_xbox_pkt.thumb_rx < -DEADZONE) {
-                gp_vy = static_cast<float>(-latest_xbox_pkt.thumb_rx - DEADZONE) / (32768.0f - DEADZONE) * max_speed_mps;
-                gp_roll_active = true;
+                norm_rx = static_cast<float>(latest_xbox_pkt.thumb_rx + DEADZONE) / (32768.0f - DEADZONE);
             }
+
+            // Đường cong lũy thừa Expo (0.35) theo tiêu chuẩn công nghiệp PX4 (MPC_XY_MAN_EXPO):
+            // Quanh vị trí trung tâm cần lái cực kỳ êm dịu, dễ tinh chỉnh; khi gạt sâu sẽ bứt tốc mạnh mẽ!
+            auto apply_stick_expo = [](float norm_input, float expo) -> float {
+                float sign = (norm_input >= 0.0f) ? 1.0f : -1.0f;
+                float abs_val = std::abs(norm_input);
+                return sign * ((1.0f - expo) * abs_val + expo * (abs_val * abs_val * abs_val));
+            };
+
+            float raw_stick_vx =  apply_stick_expo(norm_ry, 0.35f) * max_speed_mps;
+            float raw_stick_vy = -apply_stick_expo(norm_rx, 0.35f) * max_speed_mps;
+
+            bool stick_pitch_touched = (std::abs(norm_ry) > 0.02f);
+            bool stick_roll_touched  = (std::abs(norm_rx) > 0.02f);
+
+            // Bộ định hình gia tốc và hãm trượt dừng êm ái (Braking Glide Shaper):
+            // Triệt tiêu 100% hiện tượng khựng giật / nảy thân khi buông cần lái!
+            static float s_manual_vx = 0.0f;
+            static float s_manual_vy = 0.0f;
+            const float a_accel = 5.0f; // m/s^2 (Gia tốc khi gạt cần - vọt nhanh, dứt khoát)
+            const float a_brake = 2.2f; // m/s^2 (Gia tốc hãm khi buông cần - lướt dừng êm dịu như máy bay thật)
+            const float dt_frame = 0.010f;
+
+            // Trục Pitch (Tiến / Lùi)
+            if (stick_pitch_touched) {
+                if (raw_stick_vx > s_manual_vx) {
+                    s_manual_vx = std::min(raw_stick_vx, s_manual_vx + a_accel * dt_frame);
+                } else {
+                    s_manual_vx = std::max(raw_stick_vx, s_manual_vx - a_accel * dt_frame);
+                }
+                gp_pitch_active = true;
+            } else {
+                // Khi buông cần lái: Cho drone trượt hãm tốc độ êm dịu về 0
+                if (s_manual_vx > 0.0f) {
+                    s_manual_vx = std::max(0.0f, s_manual_vx - a_brake * dt_frame);
+                } else if (s_manual_vx < 0.0f) {
+                    s_manual_vx = std::min(0.0f, s_manual_vx + a_brake * dt_frame);
+                }
+                // Duy trì điều khiển lái chủ động cho đến khi drone thực sự dừng hẳn (< 0.12 m/s)
+                if (std::abs(s_manual_vx) > 0.04f || std::abs(g_vx) > 0.12f) {
+                    gp_pitch_active = true;
+                } else {
+                    s_manual_vx = 0.0f;
+                    gp_pitch_active = false;
+                }
+            }
+            gp_vx = s_manual_vx;
+
+            // Trục Roll (Trái / Phải)
+            if (stick_roll_touched) {
+                if (raw_stick_vy > s_manual_vy) {
+                    s_manual_vy = std::min(raw_stick_vy, s_manual_vy + a_accel * dt_frame);
+                } else {
+                    s_manual_vy = std::max(raw_stick_vy, s_manual_vy - a_accel * dt_frame);
+                }
+                gp_roll_active = true;
+            } else {
+                if (s_manual_vy > 0.0f) {
+                    s_manual_vy = std::max(0.0f, s_manual_vy - a_brake * dt_frame);
+                } else if (s_manual_vy < 0.0f) {
+                    s_manual_vy = std::min(0.0f, s_manual_vy + a_brake * dt_frame);
+                }
+                if (std::abs(s_manual_vy) > 0.04f || std::abs(g_vy) > 0.12f) {
+                    gp_roll_active = true;
+                } else {
+                    s_manual_vy = 0.0f;
+                    gp_roll_active = false;
+                }
+            }
+            gp_vy = s_manual_vy;
 
             // Kiểm tra kích hoạt lộn 360° nếu đang trong cửa sổ 0.35s kể từ khi nhấn LB (hoặc đang giữ LB)
             double time_since_lb = std::chrono::duration<double>(now - last_lb_press_time).count();

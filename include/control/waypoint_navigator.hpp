@@ -100,6 +100,14 @@ public:
     NavMode get_nav_mode() const { return nav_mode_; }
     bool is_auto_active() const { return nav_mode_ != NavMode::MANUAL; }
 
+    // Cài đặt thuật toán bo tròn góc cua (Corner Blending / Waypoint Filleting)
+    void set_corner_blending(bool enable, float blend_radius = 2.0f) {
+        corner_blending_enabled_ = enable;
+        blend_radius_default_ = std::max(0.5f, blend_radius);
+    }
+    bool is_corner_blending_enabled() const { return corner_blending_enabled_; }
+    float get_blend_radius() const { return blend_radius_default_; }
+
     // Đăng ký Callback sự kiện
     void set_waypoint_reached_callback(std::function<void(uint16_t seq)> cb) {
         reached_cb_ = cb;
@@ -129,10 +137,10 @@ private:
     bool is_holding_at_wp_{false};
     float hold_timer_{0.0f};
 
-    // Tốc độ bay tuần tra tối đa (Cruise Speed)
-    float max_horizontal_speed_{2.2f}; // m/s
-    float max_climb_speed_{1.2f};      // m/s
-    float max_descent_speed_{0.8f};    // m/s
+    // Tốc độ bay tuần tra tối đa (Cruise Speed) - Nâng cấp để bay nhanh và dứt khoát như PX4
+    float max_horizontal_speed_{3.5f}; // m/s (12.6 km/h)
+    float max_climb_speed_{1.6f};      // m/s
+    float max_descent_speed_{1.0f};    // m/s
 
     // Điểm bắt đầu và tiến trình của đoạn đường hiện tại (Segment Tracking)
     float segment_start_x_{0.0f};
@@ -146,6 +154,19 @@ private:
     // Quản lý góc Yaw tham chiếu mượt mà (Setpoint Profiler - Triệt tiêu hoàn toàn dao động tự kích)
     float virtual_target_yaw_{0.0f};
     bool virtual_yaw_initialized_{false};
+
+    // Thuật toán bo tròn góc cua mượt mà (Corner Blending / Waypoint Filleting - chuẩn PX4)
+    bool corner_blending_enabled_{true};
+    float blend_radius_default_{2.0f};           // Bán kính bo tròn góc cua tiêu chuẩn (m)
+    bool in_corner_blend_{false};                 // Trạng thái đang lượn cua cong Bézier
+    float blend_u_{0.0f};                        // Tiến trình dọc đường cong [0.0 -> 1.0]
+    float blend_time_{0.0f};                     // Thời gian đã chạy trong góc cua (s)
+    float blend_duration_{1.0f};                 // Tổng thời gian dự kiến lượn cua (s)
+    float blend_c0_x_{0.0f}, blend_c0_y_{0.0f};  // Điểm vào cung cua Tin
+    float blend_c1_x_{0.0f}, blend_c1_y_{0.0f};  // Đỉnh góc cua Waypoint P1
+    float blend_c2_x_{0.0f}, blend_c2_y_{0.0f};  // Điểm ra cung cua Tout
+    float blend_z_start_{0.0f}, blend_z_end_{0.0f};
+    float blend_speed_{2.2f};                    // Vận tốc ôm cua ổn định (m/s)
 
     // Tọa độ chốt giữ vị trí chủ động sau khi hoàn thành nhiệm vụ (Active Hold Target)
     float hold_target_x_{0.0f};
