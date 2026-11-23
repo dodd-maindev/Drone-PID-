@@ -17,6 +17,7 @@ add_library(drone_lib STATIC
     src/utils/data_logger.cpp
     src/sound/drone_sound.cpp
     src/control/waypoint_navigator.cpp
+    src/estimation/state_estimator.cpp
 )
 
 target_include_directories(drone_lib PUBLIC 

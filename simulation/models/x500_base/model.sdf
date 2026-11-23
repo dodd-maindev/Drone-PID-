@@ -238,20 +238,20 @@
           <!-- TODO: update to fix units and coordinate system when we move past Harmonic -->
           <!-- See https://github.com/gazebosim/gz-sim/pull/2460 -->
           <!-- 3mgauss RMS: NOTE: noise is in tesla but sensor reports data in gauss -->
-          <!-- Noise modeled after IIS2MDC -->
+          <!-- 5mgauss RMS in Tesla (5e-7 T) modeled after IIS2MDC -->
           <x>
             <noise type="gaussian">
-              <stddev>0.0001</stddev>
+              <stddev>5e-7</stddev>
             </noise>
           </x>
           <y>
             <noise type="gaussian">
-              <stddev>0.0001</stddev>
+              <stddev>5e-7</stddev>
             </noise>
           </y>
           <z>
             <noise type="gaussian">
-              <stddev>0.0001</stddev>
+              <stddev>5e-7</stddev>
             </noise>
           </z>
         </magnetometer>

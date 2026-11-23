@@ -28,7 +28,10 @@
 #include <arpa/inet.h>
 
 #include <gz/transport/Node.hh>
-#include <gz/msgs/odometry.pb.h>
+#include <gz/msgs/imu.pb.h>
+#include <gz/msgs/navsat.pb.h>
+#include <gz/msgs/fluid_pressure.pb.h>
+#include <gz/msgs/magnetometer.pb.h>
 #include <gz/msgs/actuators.pb.h>
 #include <gz/msgs/gui_camera.pb.h>
 #include <gz/msgs/boolean.pb.h>
@@ -41,6 +44,7 @@
 #include "sound/drone_sound.hpp"
 #include "control/waypoint_navigator.hpp"
 #include "utils/data_logger.hpp"
+#include "estimation/state_estimator.hpp"
 
 // Cấu trúc gói tin UDP truyền từ Tay cầm Xbox 360
 #pragma pack(push, 1)
@@ -357,8 +361,9 @@ bool launch_xbox_bridge_windows(const std::string& bridge_exe, const std::string
     }
 }
 
-// Biến lưu trạng thái Odometry từ Gazebo
+// Biến lưu trạng thái ước lượng từ Cảm biến (IMU + GPS + Barometer + Magnetometer -> EKF Sensor Fusion)
 static std::mutex g_odom_mutex;
+static DroneEstimation::StateEstimator g_estimator;
 static float g_pos_x = 0, g_pos_y = 0, g_pos_z = 0;
 static float g_vx = 0, g_vy = 0, g_vz = 0;
 static float g_roll = 0, g_pitch = 0, g_yaw = 0;
@@ -370,42 +375,90 @@ static bool g_odom_connected = false;
 static DroneCore::VehicleState g_vehicle_state;
 static DroneComm::MavlinkBridge g_mavlink_bridge;
 
-void on_odometry(const gz::msgs::Odometry& msg) {
-    std::lock_guard<std::mutex> lock(g_odom_mutex);
-    g_pos_x = msg.pose().position().x();
-    g_pos_y = msg.pose().position().y();
-    g_pos_z = msg.pose().position().z();
+void sync_estimated_state() {
+    auto st = g_estimator.get_state();
+    {
+        std::lock_guard<std::mutex> lock(g_odom_mutex);
+        g_pos_x = st.x;
+        g_pos_y = st.y;
+        g_pos_z = st.z;
+        g_vx = st.vx_body;
+        g_vy = st.vy_body;
+        g_vz = st.vz_world;
+        g_roll = st.roll;
+        g_pitch = st.pitch;
+        g_yaw = st.yaw;
+        g_p = st.p;
+        g_q = st.q;
+        g_r = st.r;
 
-    g_vx = msg.twist().linear().x();
-    g_vy = msg.twist().linear().y();
-    g_vz = msg.twist().linear().z();
+        float cy_h = std::cos(st.yaw * 0.5f),   sy_h = std::sin(st.yaw * 0.5f);
+        float cp_h = std::cos(st.pitch * 0.5f), sp_h = std::sin(st.pitch * 0.5f);
+        float cr_h = std::cos(st.roll * 0.5f),  sr_h = std::sin(st.roll * 0.5f);
+        g_qw = cr_h * cp_h * cy_h + sr_h * sp_h * sy_h;
+        g_qx = sr_h * cp_h * cy_h - cr_h * sp_h * sy_h;
+        g_qy = cr_h * sp_h * cy_h + sr_h * cp_h * sy_h;
+        g_qz = cr_h * cp_h * sy_h - sr_h * sp_h * cy_h;
+        if (st.is_healthy()) {
+            g_odom_connected = true;
+        }
+    }
 
-    g_qw = msg.pose().orientation().w();
-    g_qx = msg.pose().orientation().x();
-    g_qy = msg.pose().orientation().y();
-    g_qz = msg.pose().orientation().z();
-    DroneMath::quaternion_to_euler(g_qw, g_qx, g_qy, g_qz, g_roll, g_pitch, g_yaw);
+    g_vehicle_state.pos_x.store(st.x);
+    g_vehicle_state.pos_y.store(st.y);
+    g_vehicle_state.altitude.store(st.z);
+    g_vehicle_state.vx.store(st.vx_body);
+    g_vehicle_state.vy.store(st.vy_body);
+    g_vehicle_state.vz.store(st.vz_world);
+    g_vehicle_state.roll.store(st.roll);
+    g_vehicle_state.pitch.store(st.pitch);
+    g_vehicle_state.yaw.store(st.yaw);
+    g_vehicle_state.p.store(st.p);
+    g_vehicle_state.q.store(st.q);
+    g_vehicle_state.r.store(st.r);
+    if (st.is_healthy()) {
+        g_vehicle_state.is_connected.store(true);
+    }
+}
 
-    g_p = msg.twist().angular().x();
-    g_q = msg.twist().angular().y();
-    g_r = msg.twist().angular().z();
+void on_imu(const gz::msgs::IMU& msg) {
+    double ts = static_cast<double>(msg.header().stamp().sec()) +
+                static_cast<double>(msg.header().stamp().nsec()) * 1e-9;
+    g_estimator.on_imu(
+        ts,
+        static_cast<float>(msg.angular_velocity().x()),
+        static_cast<float>(msg.angular_velocity().y()),
+        static_cast<float>(msg.angular_velocity().z()),
+        static_cast<float>(msg.linear_acceleration().x()),
+        static_cast<float>(msg.linear_acceleration().y()),
+        static_cast<float>(msg.linear_acceleration().z())
+    );
+    sync_estimated_state();
+}
 
-    g_odom_connected = true;
+void on_gps(const gz::msgs::NavSat& msg) {
+    g_estimator.on_gps(
+        msg.latitude_deg(),
+        msg.longitude_deg(),
+        msg.altitude(),
+        static_cast<float>(msg.velocity_east()),
+        static_cast<float>(msg.velocity_north()),
+        static_cast<float>(msg.velocity_up())
+    );
+    sync_estimated_state();
+}
 
-    // Cập nhật dữ liệu cho MAVLink Bridge (phát UDP sang QGroundControl)
-    g_vehicle_state.pos_x.store(g_pos_x);
-    g_vehicle_state.pos_y.store(g_pos_y);
-    g_vehicle_state.altitude.store(g_pos_z);
-    g_vehicle_state.vx.store(g_vx);
-    g_vehicle_state.vy.store(g_vy);
-    g_vehicle_state.vz.store(g_vz);
-    g_vehicle_state.roll.store(g_roll);
-    g_vehicle_state.pitch.store(g_pitch);
-    g_vehicle_state.yaw.store(g_yaw);
-    g_vehicle_state.p.store(g_p);
-    g_vehicle_state.q.store(g_q);
-    g_vehicle_state.r.store(g_r);
-    g_vehicle_state.is_connected.store(true);
+void on_baro(const gz::msgs::FluidPressure& msg) {
+    g_estimator.on_baro(static_cast<float>(msg.pressure()));
+    sync_estimated_state();
+}
+
+void on_mag(const gz::msgs::Magnetometer& msg) {
+    g_estimator.on_mag(
+        static_cast<float>(msg.field_tesla().x()),
+        static_cast<float>(msg.field_tesla().y()),
+        static_cast<float>(msg.field_tesla().z())
+    );
 }
 
 
@@ -519,10 +572,18 @@ int main(int argc, char** argv) {
         std::cout << "[ℹ] Chờ nhận tín hiệu tay cầm qua cổng UDP 9099..." << std::endl;
     }
 
-    // 3. Khởi tạo Gazebo Transport IPC
+    // 3. Khởi tạo Gazebo Transport IPC (Nhận Sensor thô chuẩn PX4: IMU + GPS + Barometer + Magnetometer)
+    g_estimator.set_gps_origin(47.397971057728974, 8.546163739800146, 0.0);
+    g_estimator.set_mag_reference(6e-6f, 2.3e-5f, -4.2e-5f);
+
     gz::transport::Node gz_node;
-    if (!gz_node.Subscribe("/model/x500/odometry", on_odometry)) {
-        std::cerr << "[!] Không thể subscribe topic /model/x500/odometry từ Gazebo!" << std::endl;
+    bool sub_ok = true;
+    sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/imu_sensor/imu", on_imu);
+    sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/navsat_sensor/navsat", on_gps);
+    sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/air_pressure_sensor/air_pressure", on_baro);
+    sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/magnetometer_sensor/magnetometer", on_mag);
+    if (!sub_ok) {
+        std::cerr << "[!] Không thể subscribe đủ 4 topic cảm biến (IMU, NavSat, Baro, Mag) từ Gazebo!" << std::endl;
         close(serial_fd);
         if (udp_sock >= 0) close(udp_sock);
         system("pkill -f xbox_controller_bridge.exe 2>/dev/null");
@@ -537,11 +598,11 @@ int main(int argc, char** argv) {
         system("pkill -f xbox_controller_bridge.exe 2>/dev/null");
         return -1;
     }
-    std::cout << "[*] Đang chờ Gazebo Sim xuất tín hiệu Odometry..." << std::endl;
+    std::cout << "[*] Đang chờ Gazebo Sim xuất đủ 4 cảm biến (IMU + GPS + Baro + Mag) cho EKF..." << std::endl;
     while (!g_odom_connected) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    std::cout << "[✓] Đã nhận tín hiệu Odometry 100Hz từ Gazebo Sim!" << std::endl;
+    std::cout << "[✓] Đã nhận đủ 4 cảm biến & kích hoạt EKF Sensor Fusion chuẩn PX4!" << std::endl;
 
     // Camera tự động Follow drone x500 khi khởi động và trong suốt quá trình bay
     auto cam_pub = gz_node.Advertise<gz::msgs::CameraTrack>("/gui/track");
