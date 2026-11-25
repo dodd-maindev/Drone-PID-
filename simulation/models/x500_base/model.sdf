@@ -221,11 +221,11 @@
         <always_on>1</always_on>
         <update_rate>50</update_rate>
         <air_pressure>
-          <!-- Noise modeled after BMP390 -->
+          <!-- Tăng nhiễu áp suất (~0.85m độ cao) để mô phỏng ngoài trời -->
           <pressure>
             <noise type="gaussian">
               <mean>0</mean>
-              <stddev>3</stddev>
+              <stddev>10.0</stddev>
             </noise>
           </pressure>
         </air_pressure>
@@ -235,23 +235,19 @@
         <always_on>1</always_on>
         <update_rate>100</update_rate>
         <magnetometer>
-          <!-- TODO: update to fix units and coordinate system when we move past Harmonic -->
-          <!-- See https://github.com/gazebosim/gz-sim/pull/2460 -->
-          <!-- 3mgauss RMS: NOTE: noise is in tesla but sensor reports data in gauss -->
-          <!-- 5mgauss RMS in Tesla (5e-7 T) modeled after IIS2MDC -->
           <x>
             <noise type="gaussian">
-              <stddev>5e-7</stddev>
+              <stddev>2e-6</stddev>
             </noise>
           </x>
           <y>
             <noise type="gaussian">
-              <stddev>5e-7</stddev>
+              <stddev>2e-6</stddev>
             </noise>
           </y>
           <z>
             <noise type="gaussian">
-              <stddev>5e-7</stddev>
+              <stddev>2e-6</stddev>
             </noise>
           </z>
         </magnetometer>
@@ -262,47 +258,44 @@
         <update_rate>250</update_rate>
         <imu>
           <angular_velocity>
-            <!-- Noise modeled after IIM42653 -->
-            <!-- 0.05 deg/s converted to rad/s -->
+            <!-- ~0.2 deg/s -->
             <x>
               <noise type="gaussian">
                 <mean>0.0</mean>
-                <stddev>0.0008726646</stddev>
+                <stddev>0.0035</stddev>
               </noise>
             </x>
             <y>
               <noise type="gaussian">
                 <mean>0.0</mean>
-                <stddev>0.0008726646</stddev>
+                <stddev>0.0035</stddev>
               </noise>
             </y>
             <z>
               <noise type="gaussian">
                 <mean>0.0</mean>
-                <stddev>0.0008726646</stddev>
+                <stddev>0.0035</stddev>
               </noise>
             </z>
           </angular_velocity>
           <linear_acceleration>
-            <!-- Noise modeled after IIM42653 -->
-            <!-- X & Y axis: 0.65 mg-rms converted to m/ss -->
+            <!-- ~3.5 mg-rms -->
             <x>
               <noise type="gaussian">
                 <mean>0.0</mean>
-                <stddev>0.00637</stddev>
+                <stddev>0.035</stddev>
               </noise>
             </x>
             <y>
               <noise type="gaussian">
                 <mean>0.0</mean>
-                <stddev>0.00637</stddev>
+                <stddev>0.035</stddev>
               </noise>
             </y>
-            <!-- Z axis: 0.70 mg-rms converted to m/ss-->
             <z>
               <noise type="gaussian">
                 <mean>0.0</mean>
-                <stddev>0.00686</stddev>
+                <stddev>0.035</stddev>
               </noise>
             </z>
           </linear_acceleration>
@@ -312,6 +305,37 @@
         <gz_frame_id>base_link</gz_frame_id>
         <always_on>1</always_on>
         <update_rate>30</update_rate>
+        <navsat>
+          <position_sensing>
+            <horizontal>
+              <!-- Gazebo NavSat horizontal noise tính theo ĐỘ (1 deg ≈ 111,320 m) -> 4.5e-6 deg ≈ 0.5 m -->
+              <noise type="gaussian">
+                <mean>0.0</mean>
+                <stddev>4.5e-6</stddev>
+              </noise>
+            </horizontal>
+            <vertical>
+              <noise type="gaussian">
+                <mean>0.0</mean>
+                <stddev>0.50</stddev>
+              </noise>
+            </vertical>
+          </position_sensing>
+          <velocity_sensing>
+            <horizontal>
+              <noise type="gaussian">
+                <mean>0.0</mean>
+                <stddev>0.15</stddev>
+              </noise>
+            </horizontal>
+            <vertical>
+              <noise type="gaussian">
+                <mean>0.0</mean>
+                <stddev>0.20</stddev>
+              </noise>
+            </vertical>
+          </velocity_sensing>
+        </navsat>
       </sensor>
     </link>
     <link name="rotor_0">

@@ -144,6 +144,62 @@ namespace FlightConfig {
     }
 
     // =====================================================================================
+    // 3c. THUẬT TOÁN HỌC TĂNG CƯỜNG CRITIC-ONLY + BỘ QUAN SÁT ESO (on_critic_only.m)
+    //     Cấu trúc: Online HJB Critic-Only RL (9 trọng số Wp, 9 trọng số We) + ESO bậc 3
+    // =====================================================================================
+    namespace RLCritic {
+        // Thông số vật lý thực tế của Quadrotor X500 (khớp x500_base/model.sdf)
+        constexpr float MASS_KG                  = 2.064f;  // 2.0kg thân + 4*0.016kg cánh quạt
+        constexpr float GRAVITY                  = 9.80f;
+        constexpr float JX                       = 0.02167f;
+        constexpr float JY                       = 0.02167f;
+        constexpr float JZ                       = 0.04000f;
+
+        // Hệ số quy đổi lực/mô-men vật lý (N, N.m) -> tỉ lệ chuẩn hóa MotorMixer [0..1]
+        // Max thrust 4 động cơ = 4 * 8.54858e-6 * 1000^2 = 34.194 N
+        // Max roll/pitch torque scale = 4 * 0.174 * 8.54858 = 5.950 N.m
+        // Max yaw torque scale = 4 * 0.016 * 8.54858 = 0.5471 N.m
+        constexpr float MAX_TOTAL_THRUST_N       = 34.194f;
+        constexpr float MIXER_ROLL_SCALE_NM      = 5.950f;
+        constexpr float MIXER_PITCH_SCALE_NM     = 5.950f;
+        constexpr float MIXER_YAW_SCALE_NM       = 0.5471f;
+
+        // Tham số Critic Vị trí (Position & Altitude RL): Qp, Rp, learning rates kp1, kp2
+        constexpr float QP_POS_XY                = 0.60f;
+        constexpr float QP_POS_Z                 = 2.00f;
+        constexpr float QP_VEL_XY                = 0.45f;
+        constexpr float QP_VEL_Z                 = 1.00f;
+        constexpr float RP_XY                    = 0.08f;
+        constexpr float RP_Z                     = 0.04f;
+        constexpr float KP1_LEARN                = 0.60f;
+        constexpr float KP2_STAB                 = 0.05f;
+
+        // Tham số Critic Góc thái độ (Attitude RL): Qe, Re, learning rates ke1, ke2
+        constexpr float QE_ANG_RP                = 2.40f;
+        constexpr float QE_ANG_YAW               = 0.25f;
+        constexpr float QE_RATE_RP               = 0.055f;
+        constexpr float QE_RATE_YAW              = 0.08f;
+        constexpr float RE_RP                    = 1.00f;
+        constexpr float RE_YAW                   = 10.00f;
+        constexpr float KE1_LEARN                = 0.40f;
+        constexpr float KE2_STAB                 = 0.04f;
+
+        // Tham số Bộ quan sát trạng thái mở rộng (ESO bậc 3: c1=6, c2=11, c3=6)
+        // Băng thông và mô hình trễ cơ cấu chấp hành tối ưu cho HITL có trễ truyền thông + động cơ
+        constexpr float ESO_C1                   = 6.0f;
+        constexpr float ESO_C2                   = 11.0f;
+        constexpr float ESO_C3                   = 6.0f;
+        constexpr float ESO_EPS_POS              = 0.45f;   // Băng thông ESO vị trí chịu trễ GPS/nghiêng
+        constexpr float ESO_EPS_ATT              = 0.55f;   // Băng thông ESO góc ổn định dưới trễ UART/Motor (~35ms)
+        constexpr float ESO_ACT_LAG_POS_S        = 0.10f;   // Hằng số thời gian đáp ứng góc nghiêng vòng ngoài (s)
+        constexpr float ESO_ACT_LAG_ATT_S        = 0.035f;  // Hằng số thời gian trễ Motor + UART vòng trong (s)
+        constexpr float ESO_MAX_DIS_P_XY         = 2.20f;   // Giới hạn ước lượng nhiễu gió ngang (m/s^2)
+        constexpr float ESO_MAX_DIS_P_Z          = 2.50f;   // Giới hạn ước lượng nhiễu trục đứng (m/s^2)
+        constexpr float ESO_MAX_DIS_ATT_RP       = 1.20f;   // Giới hạn ước lượng nhiễu mô-men Roll/Pitch (rad/s^2)
+        constexpr float ESO_MAX_DIS_ATT_YAW      = 0.80f;   // Giới hạn ước lượng nhiễu mô-men Yaw (rad/s^2)
+    }
+
+    // =====================================================================================
     // 4. BỘ ĐIỀU KHIỂN ĐỘ CAO (ALTITUDE CONTROLLER)
     // =====================================================================================
     namespace Altitude {

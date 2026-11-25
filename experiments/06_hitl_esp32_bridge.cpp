@@ -32,6 +32,7 @@
 #include <gz/msgs/navsat.pb.h>
 #include <gz/msgs/fluid_pressure.pb.h>
 #include <gz/msgs/magnetometer.pb.h>
+#include <gz/msgs/odometry.pb.h>
 #include <gz/msgs/actuators.pb.h>
 #include <gz/msgs/gui_camera.pb.h>
 #include <gz/msgs/boolean.pb.h>
@@ -363,6 +364,12 @@ bool launch_xbox_bridge_windows(const std::string& bridge_exe, const std::string
 
 // Biến lưu trạng thái ước lượng từ Cảm biến (IMU + GPS + Barometer + Magnetometer -> EKF Sensor Fusion)
 static std::mutex g_odom_mutex;
+enum StateSourceMode {
+    STATE_SENSOR_EKF = 0,
+    STATE_WORLD_ODOM = 1,
+    STATE_RAW_SENSOR = 2
+};
+static StateSourceMode g_state_source = STATE_SENSOR_EKF;
 static DroneEstimation::StateEstimator g_estimator;
 static float g_pos_x = 0, g_pos_y = 0, g_pos_z = 0;
 static float g_vx = 0, g_vy = 0, g_vz = 0;
@@ -422,21 +429,87 @@ void sync_estimated_state() {
 }
 
 void on_imu(const gz::msgs::IMU& msg) {
+    float gx = static_cast<float>(msg.angular_velocity().x());
+    float gy = static_cast<float>(msg.angular_velocity().y());
+    float gz = static_cast<float>(msg.angular_velocity().z());
+    float ax = static_cast<float>(msg.linear_acceleration().x());
+    float ay = static_cast<float>(msg.linear_acceleration().y());
+    float az = static_cast<float>(msg.linear_acceleration().z());
+
+    if (g_state_source == STATE_RAW_SENSOR) {
+        float raw_roll  = std::atan2(ay, az);
+        float raw_pitch = std::atan2(-ax, std::sqrt(ay * ay + az * az));
+        {
+            std::lock_guard<std::mutex> lock(g_odom_mutex);
+            g_p = gx;
+            g_q = gy;
+            g_r = gz;
+            g_roll = raw_roll;
+            g_pitch = raw_pitch;
+            float cy_h = std::cos(g_yaw * 0.5f),   sy_h = std::sin(g_yaw * 0.5f);
+            float cp_h = std::cos(g_pitch * 0.5f), sp_h = std::sin(g_pitch * 0.5f);
+            float cr_h = std::cos(g_roll * 0.5f),  sr_h = std::sin(g_roll * 0.5f);
+            g_qw = cr_h * cp_h * cy_h + sr_h * sp_h * sy_h;
+            g_qx = sr_h * cp_h * cy_h - cr_h * sp_h * sy_h;
+            g_qy = cr_h * sp_h * cy_h + sr_h * cp_h * sy_h;
+            g_qz = cr_h * cp_h * sy_h - sr_h * sp_h * cy_h;
+        }
+        g_vehicle_state.roll.store(raw_roll);
+        g_vehicle_state.pitch.store(raw_pitch);
+        g_vehicle_state.p.store(gx);
+        g_vehicle_state.q.store(gy);
+        g_vehicle_state.r.store(gz);
+        return;
+    }
+
     double ts = static_cast<double>(msg.header().stamp().sec()) +
                 static_cast<double>(msg.header().stamp().nsec()) * 1e-9;
-    g_estimator.on_imu(
-        ts,
-        static_cast<float>(msg.angular_velocity().x()),
-        static_cast<float>(msg.angular_velocity().y()),
-        static_cast<float>(msg.angular_velocity().z()),
-        static_cast<float>(msg.linear_acceleration().x()),
-        static_cast<float>(msg.linear_acceleration().y()),
-        static_cast<float>(msg.linear_acceleration().z())
-    );
+    g_estimator.on_imu(ts, gx, gy, gz, ax, ay, az);
     sync_estimated_state();
 }
 
 void on_gps(const gz::msgs::NavSat& msg) {
+    if (g_state_source == STATE_RAW_SENSOR) {
+        static bool raw_gps_origin_set = false;
+        static double raw_origin_lat = 47.397971057728974;
+        static double raw_origin_lon = 8.546163739800146;
+        static double raw_m_per_deg_lat = 111320.0;
+        static double raw_m_per_deg_lon = 111320.0 * std::cos(47.397971057728974 * M_PI / 180.0);
+        if (!raw_gps_origin_set) {
+            raw_origin_lat = msg.latitude_deg();
+            raw_origin_lon = msg.longitude_deg();
+            raw_m_per_deg_lon = 111320.0 * std::cos(raw_origin_lat * M_PI / 180.0);
+            raw_gps_origin_set = true;
+        }
+        float raw_x = static_cast<float>((msg.longitude_deg() - raw_origin_lon) * raw_m_per_deg_lon);
+        float raw_y = static_cast<float>((msg.latitude_deg()  - raw_origin_lat) * raw_m_per_deg_lat);
+        float ve = static_cast<float>(msg.velocity_east());
+        float vn = static_cast<float>(msg.velocity_north());
+        float vu = static_cast<float>(msg.velocity_up());
+
+        float vx_b = 0.0f, vy_b = 0.0f;
+        {
+            std::lock_guard<std::mutex> lock(g_odom_mutex);
+            float cy = std::cos(g_yaw);
+            float sy = std::sin(g_yaw);
+            vx_b =  cy * ve + sy * vn;
+            vy_b = -sy * ve + cy * vn;
+            g_pos_x = raw_x;
+            g_pos_y = raw_y;
+            g_vx = vx_b;
+            g_vy = vy_b;
+            g_vz = vu;
+            g_odom_connected = true;
+        }
+        g_vehicle_state.pos_x.store(raw_x);
+        g_vehicle_state.pos_y.store(raw_y);
+        g_vehicle_state.vx.store(vx_b);
+        g_vehicle_state.vy.store(vy_b);
+        g_vehicle_state.vz.store(vu);
+        g_vehicle_state.is_connected.store(true);
+        return;
+    }
+
     g_estimator.on_gps(
         msg.latitude_deg(),
         msg.longitude_deg(),
@@ -449,11 +522,75 @@ void on_gps(const gz::msgs::NavSat& msg) {
 }
 
 void on_baro(const gz::msgs::FluidPressure& msg) {
+    if (g_state_source == STATE_RAW_SENSOR) {
+        float p_pa = static_cast<float>(msg.pressure());
+        if (p_pa <= 10000.0f) return;
+        static bool raw_baro_cal = false;
+        static double raw_p0_sum = 0.0;
+        static int raw_p0_cnt = 0;
+        static float raw_p0 = 101325.0f;
+        if (!raw_baro_cal) {
+            raw_p0_sum += static_cast<double>(p_pa);
+            raw_p0_cnt++;
+            if (raw_p0_cnt >= 15) {
+                raw_p0 = static_cast<float>(raw_p0_sum / static_cast<double>(raw_p0_cnt));
+                raw_baro_cal = true;
+            }
+            return;
+        }
+        float raw_z = 44330.0f * (1.0f - std::pow(p_pa / raw_p0, 1.0f / 5.255f)) + 0.12f;
+        {
+            std::lock_guard<std::mutex> lock(g_odom_mutex);
+            g_pos_z = raw_z;
+        }
+        g_vehicle_state.altitude.store(raw_z);
+        return;
+    }
+
     g_estimator.on_baro(static_cast<float>(msg.pressure()));
     sync_estimated_state();
 }
 
 void on_mag(const gz::msgs::Magnetometer& msg) {
+    if (g_state_source == STATE_RAW_SENSOR) {
+        float mx = static_cast<float>(msg.field_tesla().x());
+        float my = static_cast<float>(msg.field_tesla().y());
+        float mz = static_cast<float>(msg.field_tesla().z());
+        float r = 0.0f, p = 0.0f;
+        {
+            std::lock_guard<std::mutex> lock(g_odom_mutex);
+            r = g_roll;
+            p = g_pitch;
+        }
+        float sr = std::sin(r), cr = std::cos(r);
+        float sp = std::sin(p), cp = std::cos(p);
+        float hx = cp * mx + sp * sr * my + sp * cr * mz;
+        float hy = cr * my - sr * mz;
+        if (hx * hx + hy * hy < 1e-12f) return;
+
+        static bool raw_mag_cal = false;
+        static double raw_hx_sum = 0.0, raw_hy_sum = 0.0;
+        static int raw_mag_cnt = 0;
+        static float raw_mag_ref = 0.0f;
+        if (!raw_mag_cal) {
+            raw_hx_sum += static_cast<double>(hx);
+            raw_hy_sum += static_cast<double>(hy);
+            raw_mag_cnt++;
+            if (raw_mag_cnt >= 20) {
+                raw_mag_ref = static_cast<float>(std::atan2(raw_hy_sum, raw_hx_sum));
+                raw_mag_cal = true;
+            }
+            return;
+        }
+        float raw_yaw = DroneMath::normalize_angle(raw_mag_ref - std::atan2(hy, hx));
+        {
+            std::lock_guard<std::mutex> lock(g_odom_mutex);
+            g_yaw = raw_yaw;
+        }
+        g_vehicle_state.yaw.store(raw_yaw);
+        return;
+    }
+
     g_estimator.on_mag(
         static_cast<float>(msg.field_tesla().x()),
         static_cast<float>(msg.field_tesla().y()),
@@ -461,7 +598,96 @@ void on_mag(const gz::msgs::Magnetometer& msg) {
     );
 }
 
+void on_world_odometry(const gz::msgs::Odometry& msg) {
+    float x = static_cast<float>(msg.pose().position().x());
+    float y = static_cast<float>(msg.pose().position().y());
+    float z = static_cast<float>(msg.pose().position().z());
 
+    float qw = static_cast<float>(msg.pose().orientation().w());
+    float qx = static_cast<float>(msg.pose().orientation().x());
+    float qy = static_cast<float>(msg.pose().orientation().y());
+    float qz = static_cast<float>(msg.pose().orientation().z());
+
+    float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
+    DroneMath::quaternion_to_euler(qw, qx, qy, qz, roll, pitch, yaw);
+
+    float vx_b = static_cast<float>(msg.twist().linear().x());
+    float vy_b = static_cast<float>(msg.twist().linear().y());
+    float vz_b = static_cast<float>(msg.twist().linear().z());
+
+    float sp = std::sin(pitch), cp = std::cos(pitch);
+    float sr = std::sin(roll),  cr = std::cos(roll);
+    float vz_w = -sp * vx_b + cp * sr * vy_b + cp * cr * vz_b;
+
+    float p = static_cast<float>(msg.twist().angular().x());
+    float q = static_cast<float>(msg.twist().angular().y());
+    float r = static_cast<float>(msg.twist().angular().z());
+
+    {
+        std::lock_guard<std::mutex> lock(g_odom_mutex);
+        g_pos_x = x;
+        g_pos_y = y;
+        g_pos_z = z;
+        g_vx = vx_b;
+        g_vy = vy_b;
+        g_vz = vz_w;
+        g_roll = roll;
+        g_pitch = pitch;
+        g_yaw = yaw;
+        g_p = p;
+        g_q = q;
+        g_r = r;
+        g_qw = qw;
+        g_qx = qx;
+        g_qy = qy;
+        g_qz = qz;
+        g_odom_connected = true;
+    }
+
+    g_vehicle_state.pos_x.store(x);
+    g_vehicle_state.pos_y.store(y);
+    g_vehicle_state.altitude.store(z);
+    g_vehicle_state.vx.store(vx_b);
+    g_vehicle_state.vy.store(vy_b);
+    g_vehicle_state.vz.store(vz_w);
+    g_vehicle_state.roll.store(roll);
+    g_vehicle_state.pitch.store(pitch);
+    g_vehicle_state.yaw.store(yaw);
+    g_vehicle_state.p.store(p);
+    g_vehicle_state.q.store(q);
+    g_vehicle_state.r.store(r);
+    g_vehicle_state.is_connected.store(true);
+}
+
+
+
+static const char* algo_mode_name(ControlAlgoMode m) {
+    switch (m) {
+        case ALGO_ITSMC:     return "ITSMC";
+        case ALGO_RL_CRITIC: return "RL-Critic+ESO";
+        case ALGO_PID:       return "PID";
+        default:             return "ITSMC";
+    }
+}
+
+static std::string algo_log_subdir(ControlAlgoMode m) {
+    switch (m) {
+        case ALGO_ITSMC:     return "itsmc";
+        case ALGO_RL_CRITIC: return "critic";
+        case ALGO_PID:       return "pid";
+        default:             return "itsmc";
+    }
+}
+
+static ControlAlgoMode parse_algo_arg(const std::string& val) {
+    if (val == "2" || val == "rl" || val == "RL" || val == "critic" || val == "rl_critic" || val == "rl-critic") {
+        return ALGO_RL_CRITIC;
+    }
+    if (val == "3" || val == "pid" || val == "PID") {
+        return ALGO_PID;
+    }
+    return ALGO_ITSMC;
+}
 
 int main(int argc, char** argv) {
     // Khởi tạo hệ thống ghi file log
@@ -469,17 +695,29 @@ int main(int argc, char** argv) {
     log_event("STARTUP", "Khởi động cầu nối Drone HITL (ESP32 <-> Gazebo Sim)");
 
     bool auto_mode_enabled = false;
+    ControlAlgoMode selected_algo = ALGO_ITSMC;
     std::string serial_port = "";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--auto" || arg == "-a") {
             auto_mode_enabled = true;
+        } else if (arg == "--no-estimator" || arg == "--world-odom") {
+            g_state_source = STATE_WORLD_ODOM;
+        } else if (arg == "--raw-sensor") {
+            g_state_source = STATE_RAW_SENSOR;
+        } else if (arg == "--algo" && i + 1 < argc) {
+            selected_algo = parse_algo_arg(argv[++i]);
+        } else if (arg.rfind("--algo=", 0) == 0) {
+            selected_algo = parse_algo_arg(arg.substr(7));
         } else if (arg.rfind("/dev/", 0) == 0) {
             serial_port = arg;
         } else if (serial_port.empty() && arg[0] != '-') {
             serial_port = arg;
         }
     }
+
+    std::cout << "[★] Thuật toán điều khiển ESP32 đã chọn: " << algo_mode_name(selected_algo) << std::endl;
+    log_event("ALGO_SELECT", std::string("Thuật toán ESP32: ") + algo_mode_name(selected_algo));
 
     if (!serial_port.empty()) {
         int test_fd = open(serial_port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
@@ -572,22 +810,39 @@ int main(int argc, char** argv) {
         std::cout << "[ℹ] Chờ nhận tín hiệu tay cầm qua cổng UDP 9099..." << std::endl;
     }
 
-    // 3. Khởi tạo Gazebo Transport IPC (Nhận Sensor thô chuẩn PX4: IMU + GPS + Barometer + Magnetometer)
-    g_estimator.set_gps_origin(47.397971057728974, 8.546163739800146, 0.0);
-    g_estimator.set_mag_reference(6e-6f, 2.3e-5f, -4.2e-5f);
-
+    // 3. Khởi tạo Gazebo Transport IPC
     gz::transport::Node gz_node;
     bool sub_ok = true;
-    sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/imu_sensor/imu", on_imu);
-    sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/navsat_sensor/navsat", on_gps);
-    sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/air_pressure_sensor/air_pressure", on_baro);
-    sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/magnetometer_sensor/magnetometer", on_mag);
-    if (!sub_ok) {
-        std::cerr << "[!] Không thể subscribe đủ 4 topic cảm biến (IMU, NavSat, Baro, Mag) từ Gazebo!" << std::endl;
-        close(serial_fd);
-        if (udp_sock >= 0) close(udp_sock);
-        system("pkill -f xbox_controller_bridge.exe 2>/dev/null");
-        return -1;
+    if (g_state_source == STATE_SENSOR_EKF || g_state_source == STATE_RAW_SENSOR) {
+        if (g_state_source == STATE_SENSOR_EKF) {
+            std::cout << "[★] Nguồn trạng thái: 4 Cảm biến thô + StateEstimator (Kalman/Complementary)" << std::endl;
+            g_estimator.set_gps_origin(47.397971057728974, 8.546163739800146, 0.0);
+            g_estimator.set_mag_reference(6e-6f, 2.3e-5f, -4.2e-5f);
+        } else {
+            std::cout << "[★] Nguồn trạng thái: 4 Cảm biến THÔ TRỰC TIẾP (KHÔNG qua StateEstimator)" << std::endl;
+        }
+
+        sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/imu_sensor/imu", on_imu);
+        sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/navsat_sensor/navsat", on_gps);
+        sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/air_pressure_sensor/air_pressure", on_baro);
+        sub_ok &= gz_node.Subscribe("/world/default/model/x500/link/base_link/sensor/magnetometer_sensor/magnetometer", on_mag);
+        if (!sub_ok) {
+            std::cerr << "[!] Không thể subscribe đủ 4 topic cảm biến (IMU, NavSat, Baro, Mag) từ Gazebo!" << std::endl;
+            close(serial_fd);
+            if (udp_sock >= 0) close(udp_sock);
+            system("pkill -f xbox_controller_bridge.exe 2>/dev/null");
+            return -1;
+        }
+    } else {
+        std::cout << "[★] Nguồn trạng thái: ĐỌC THẲNG PHYSICS / Gazebo Odometry (/model/x500/odometry)" << std::endl;
+        sub_ok &= gz_node.Subscribe("/model/x500/odometry", on_world_odometry);
+        if (!sub_ok) {
+            std::cerr << "[!] Không thể subscribe topic /model/x500/odometry từ Gazebo!" << std::endl;
+            close(serial_fd);
+            if (udp_sock >= 0) close(udp_sock);
+            system("pkill -f xbox_controller_bridge.exe 2>/dev/null");
+            return -1;
+        }
     }
     auto motor_pub = gz_node.Advertise<gz::msgs::Actuators>("/x500/command/motor_speed");
     auto motor_pub_alt = gz_node.Advertise<gz::msgs::Actuators>("/model/x500/command/motor_speed");
@@ -1198,11 +1453,12 @@ int main(int argc, char** argv) {
 
 
 
-        // 3. Đóng gói SensorPacket (68 bytes) gửi sang ESP32
+        // 3. Đóng gói SensorPacket (69 bytes) gửi sang ESP32
         SensorPacket send_pkt;
         memset(&send_pkt, 0, sizeof(send_pkt));
         send_pkt.header[0] = 0xAA;
         send_pkt.header[1] = 0x55;
+        send_pkt.algo_mode = static_cast<uint8_t>(selected_algo);
 
         {
             std::lock_guard<std::mutex> lock(g_odom_mutex);
@@ -1350,15 +1606,17 @@ int main(int argc, char** argv) {
                         s_traj_session_done = true;
                         traj_logger.stop();
                         std::cout << "\n[📊 TRAJECTORY] Đã khóa chốt vị trí đích ổn định! Tự động tạo đồ thị bám quỹ đạo..." << std::endl;
-                        int ret = system("python3 scripts/plot_trajectory.py logs/trajectory/latest_trajectory.csv > /dev/null 2>&1 &");
+                        std::string plot_cmd = "python3 scripts/plot_trajectory.py \"" + traj_logger.get_latest_log_path() + "\" > /dev/null 2>&1 &";
+                        int ret = system(plot_cmd.c_str());
                         (void)ret;
                     }
                 } else {
                     s_hold_time_s = 0.0f;
                 }
             } else if (is_armed && send_pkt.z >= 0.5f && !s_traj_session_done) {
-                // Tự động khởi tạo file log ngay khi drone rời mặt đất
-                traj_logger.start("logs/trajectory", "traj");
+                // Tự động khởi tạo file log ngay khi drone rời mặt đất (riêng thư mục theo thuật toán)
+                std::string traj_dir = "logs/" + algo_log_subdir(selected_algo) + "/trajectory";
+                traj_logger.start(traj_dir, "traj");
                 traj_start_time = now;
             }
         } else {
@@ -1367,7 +1625,8 @@ int main(int argc, char** argv) {
                 s_traj_session_done = true;
                 traj_logger.stop();
                 std::cout << "[📊 TRAJECTORY] Tự động tạo đồ thị phân tích bám quỹ đạo..." << std::endl;
-                int ret = system("python3 scripts/plot_trajectory.py logs/trajectory/latest_trajectory.csv > /dev/null 2>&1 &");
+                std::string plot_cmd = "python3 scripts/plot_trajectory.py \"" + traj_logger.get_latest_log_path() + "\" > /dev/null 2>&1 &";
+                int ret = system(plot_cmd.c_str());
                 (void)ret;
             }
         }
@@ -1388,12 +1647,21 @@ int main(int argc, char** argv) {
             send_pkt.cmd_alt_vel = 0.0f;
             send_pkt.cmd_yaw_rate = 0.0f;
             send_pkt.flags = (is_armed ? (CTRL_FLAG_ARMED | CTRL_FLAG_DRIVING_X | CTRL_FLAG_DRIVING_Y) : 0);
+            send_pkt.algo_mode = static_cast<uint8_t>(selected_algo);
         }
 
         send_pkt.checksum = compute_packet_checksum((uint8_t*)&send_pkt + 2, sizeof(send_pkt) - 3);
 
         ssize_t w_ret = write(serial_fd, (uint8_t*)&send_pkt, sizeof(send_pkt));
         if (w_ret > 0) tx_packets++;
+
+        static bool warned_no_rx = false;
+        if (!warned_no_rx && tx_packets >= 200 && rx_packets == 0) {
+            warned_no_rx = true;
+            std::cout << "\n[⚠ CẢNH BÁO] Đã gửi 200 gói tin (69 bytes) nhưng chưa thấy ESP32 phản hồi! "
+                      << "Nếu chưa nạp code mới, hãy nạp firmware_esp32/firmware_esp32.ino lên ESP32 1 lần nhé."
+                      << std::endl;
+        }
 
         // 4. Đọc toàn bộ phản hồi ActuatorPacket từ ESP32 có trong bộ đệm Serial
         uint8_t read_buf[256];
@@ -1403,6 +1671,7 @@ int main(int argc, char** argv) {
         }
 
         static float last_motor_w0 = 0.0f;
+        static ControlAlgoMode esp_active_algo = ALGO_ITSMC;
         // Tìm và giải mã gói tin ActuatorPacket (28 bytes)
         while (rx_buffer.size() >= sizeof(ActuatorPacket)) {
             if (rx_buffer[0] == 0x55 && rx_buffer[1] == 0xAA) {
@@ -1436,6 +1705,7 @@ int main(int argc, char** argv) {
                     rx_packets++;
                     last_esp_pitch = in_pkt.target_pitch_deg;
                     last_esp_roll  = in_pkt.target_roll_deg;
+                    esp_active_algo = static_cast<ControlAlgoMode>((in_pkt.status_flags >> 4) & 0x03);
 
                     // Xóa gói đã xử lý khỏi buffer
                     rx_buffer.erase(rx_buffer.begin(), rx_buffer.begin() + sizeof(ActuatorPacket));
@@ -1644,14 +1914,14 @@ int main(int argc, char** argv) {
                 "{\"t\":%.3f,\"r\":%.2f,\"p\":%.2f,\"y\":%.2f,"
                 "\"tr\":%.2f,\"tp\":%.2f,\"z\":%.3f,\"tz\":2.00,\"vz\":%.2f,\"vx\":%.2f,\"vy\":%.2f,"
                 "\"w\":[%.1f,%.1f,%.1f,%.1f],\"rates\":[%.2f,%.2f,%.2f],"
-                "\"arm\":%d,\"land\":%d,\"status\":\"%s\",\"tx\":%u,\"rx\":%u}",
+                "\"arm\":%d,\"land\":%d,\"algo\":\"%s\",\"status\":\"%s\",\"tx\":%u,\"rx\":%u}",
                 sim_time,
                 DroneMath::rad2deg(g_roll), DroneMath::rad2deg(g_pitch), DroneMath::rad2deg(g_yaw),
                 last_esp_roll, last_esp_pitch,
                 g_pos_z, g_vz, g_vx, g_vy,
                 last_motor_w0, last_motor_w1, last_motor_w2, last_motor_w3,
                 DroneMath::rad2deg(g_p), DroneMath::rad2deg(g_q), DroneMath::rad2deg(g_r),
-                is_armed ? 1 : 0, req_land ? 1 : 0, status_str.c_str(), tx_packets, rx_packets);
+                is_armed ? 1 : 0, req_land ? 1 : 0, algo_mode_name(esp_active_algo), status_str.c_str(), tx_packets, rx_packets);
             if (n > 0 && n < (int)sizeof(json_buf)) {
                 sendto(osc_sock, json_buf, n, 0, (struct sockaddr*)&osc_addr, sizeof(osc_addr));
             }
@@ -1673,6 +1943,7 @@ int main(int argc, char** argv) {
             std::string qgc_status = g_mavlink_bridge.is_qgc_connected() ? "📡 QGC: ON" : "📡 QGC: Chờ";
 
             std::cout << "\r[⚡ HITL-ESP32] "
+                      << "Algo: " << algo_mode_name(esp_active_algo) << " | "
                       << pad_status << " | "
                       << qgc_status << " | "
                       << "Alt: " << std::fixed << std::setprecision(2) << g_pos_z << "m | "
@@ -1690,7 +1961,8 @@ int main(int argc, char** argv) {
     if (traj_logger.is_logging()) {
         traj_logger.stop();
         std::cout << "\n[📊 TRAJECTORY] Tự động xuất đồ thị bám quỹ đạo lần cuối..." << std::endl;
-        int ret = system("python3 scripts/plot_trajectory.py logs/trajectory/latest_trajectory.csv > /dev/null 2>&1 &");
+        std::string plot_cmd = "python3 scripts/plot_trajectory.py \"" + traj_logger.get_latest_log_path() + "\" > /dev/null 2>&1 &";
+        int ret = system(plot_cmd.c_str());
         (void)ret;
     }
 

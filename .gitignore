@@ -29,6 +29,9 @@ logs/
 # Temporary and cache files
 /tmp/
 .cache/
+__pycache__/
+*.pyc
+*.pyo
 *.tmp
 *.bak
 *.swp

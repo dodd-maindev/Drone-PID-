@@ -613,11 +613,13 @@ def main():
     generate_interactive_html(data, metrics, out_html)
     try_matplotlib_png(data, metrics, out_png)
 
-    # Đồng bộ sang DroneHITL trên Windows để tiện xem
-    win_out_dir = "DroneHITL/logs/trajectory"
-    if os.path.isdir(win_out_dir):
+    # Đồng bộ sang DroneHITL trên Windows đúng thư mục tương ứng để tiện xem
+    norm_out_dir = os.path.normpath(out_dir)
+    if not norm_out_dir.startswith("DroneHITL") and os.path.isdir("DroneHITL"):
+        win_out_dir = os.path.join("DroneHITL", norm_out_dir)
+        os.makedirs(win_out_dir, exist_ok=True)
         import shutil
-        for src in [out_svg, out_html]:
+        for src in [out_svg, out_html, out_png]:
             if os.path.isfile(src):
                 dst = os.path.join(win_out_dir, os.path.basename(src))
                 shutil.copyfile(src, dst)

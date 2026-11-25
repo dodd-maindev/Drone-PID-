@@ -20,12 +20,48 @@ WORLD_SDF="$PROJECT_DIR/simulation/worlds/drone_world.sdf"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
-# Kiểm tra tham số dòng lệnh chế độ tự động (--auto hoặc -a)
+# Kiểm tra tham số dòng lệnh chế độ tự động (--auto hoặc -a) và thuật toán (--algo)
 AUTO_FLAG=""
-for arg in "$@"; do
-    if [ "$arg" == "--auto" ] || [ "$arg" == "-a" ]; then
-        AUTO_FLAG="--auto"
-    fi
+ESTIMATOR_FLAG=""
+ALGO_ARG=""
+CLI_ESP_PORT=""
+SPLIT_MODE=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --auto|-a)
+            AUTO_FLAG="--auto"
+            ;;
+        --no-estimator|--world-odom)
+            ESTIMATOR_FLAG="--no-estimator"
+            STATE_SOURCE_ARG="world"
+            ;;
+        --raw-sensor)
+            ESTIMATOR_FLAG="--raw-sensor"
+            STATE_SOURCE_ARG="raw"
+            ;;
+        --sensor-ekf|--estimator)
+            ESTIMATOR_FLAG=""
+            STATE_SOURCE_ARG="sensor"
+            ;;
+        --split)
+            SPLIT_MODE=true
+            ;;
+        --algo)
+            if [ -n "$2" ]; then
+                ALGO_ARG="$2"
+                shift
+            fi
+            ;;
+        --algo=*)
+            ALGO_ARG="${1#*=}"
+            ;;
+        /dev/tty*)
+            if [ -e "$1" ]; then
+                CLI_ESP_PORT="$1"
+            fi
+            ;;
+    esac
+    shift
 done
 
 GAZEBO_PID=""
@@ -69,6 +105,81 @@ echo "║            🚁 DRONE HITL SIMULATOR v1.0                    ║"
 echo "║         Hardware-In-The-Loop Flight Controller              ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
+
+# Chọn thuật toán điều khiển chạy trên ESP32 (nếu chưa truyền qua --algo)
+if [ -z "$ALGO_ARG" ]; then
+    echo -e "${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}║          CHỌN THUẬT TOÁN ĐIỀU KHIỂN TRÊN ESP32              ║${NC}"
+    echo -e "${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "║  ${CYAN}1.${NC} ITSMC (Integral Terminal Sliding Mode Control)          ║"
+    echo -e "║  ${CYAN}2.${NC} RL Critic-Only + ESO (Học tăng cường trực tuyến)        ║"
+    echo -e "║  ${CYAN}3.${NC} PID (Bộ điều khiển PID cổ điển)                        ║"
+    echo -e "${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+    while true; do
+        read -r -p "Nhập lựa chọn [1-3] (Mặc định 1): " ALGO_CHOICE
+        case "$ALGO_CHOICE" in
+            ""|"1") ALGO_ARG="itsmc"; break ;;
+            "2")    ALGO_ARG="rl";    break ;;
+            "3")    ALGO_ARG="pid";   break ;;
+            *)      echo -e "${RED}[!] Lựa chọn không hợp lệ. Vui lòng nhập 1, 2 hoặc 3.${NC}" ;;
+        esac
+    done
+fi
+
+case "$ALGO_ARG" in
+    rl|RL|2|critic|rl_critic|rl-critic)
+        ALGO_ARG="rl"
+        ALGO_LABEL="RL Critic-Only + ESO (on_critic_only.m)"
+        ;;
+    pid|PID|3)
+        ALGO_ARG="pid"
+        ALGO_LABEL="PID (Classical PID Controller)"
+        ;;
+    *)
+        ALGO_ARG="itsmc"
+        ALGO_LABEL="ITSMC (Integral Terminal Sliding Mode Control)"
+        ;;
+esac
+echo -e "${GREEN}[✓] Đã chọn thuật toán ESP32: ${BOLD}$ALGO_LABEL${NC}"
+echo ""
+
+# Chọn nguồn dữ liệu trạng thái (nếu chưa truyền qua --no-estimator / --world-odom / --sensor-ekf)
+if [ -z "${STATE_SOURCE_ARG:-}" ]; then
+    echo -e "${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}║          CHỌN NGUỒN DỮ LIỆU TRẠNG THÁI (STATE SOURCE)        ║${NC}"
+    echo -e "${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "║  ${CYAN}1.${NC} Drone World Odometry (Tọa độ chuẩn Gazebo, không qua EKF) ║"
+    echo -e "║  ${CYAN}2.${NC} 4 Cảm biến + StateEstimator (IMU/GPS/Baro/Mag + Kalman)  ║"
+    echo -e "${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+    while true; do
+        read -r -p "Nhập lựa chọn [1-2] (Mặc định 2): " SRC_CHOICE
+        case "$SRC_CHOICE" in
+            "1")
+                ESTIMATOR_FLAG="--no-estimator"
+                STATE_SOURCE_ARG="world"
+                break
+                ;;
+            ""|"2")
+                ESTIMATOR_FLAG=""
+                STATE_SOURCE_ARG="sensor"
+                break
+                ;;
+            *)
+                echo -e "${RED}[!] Lựa chọn không hợp lệ. Vui lòng nhập 1 hoặc 2.${NC}"
+                ;;
+        esac
+    done
+fi
+
+if [ "$STATE_SOURCE_ARG" = "world" ]; then
+    STATE_SOURCE_LABEL="Drone World Odometry (/model/x500/odometry - không qua StateEstimator)"
+elif [ "$STATE_SOURCE_ARG" = "raw" ]; then
+    STATE_SOURCE_LABEL="4 Cảm biến THÔ TRỰC TIẾP (KHÔNG qua StateEstimator)"
+else
+    STATE_SOURCE_LABEL="4 Cảm biến thô + StateEstimator (Kalman + Complementary Filter)"
+fi
+echo -e "${GREEN}[✓] Đã chọn nguồn dữ liệu: ${BOLD}$STATE_SOURCE_LABEL${NC}"
+echo ""
 
 # Kiểm tra Gazebo
 if ! command -v gz &>/dev/null; then
@@ -179,14 +290,7 @@ if [ -d "/usr/lib/wsl" ] || grep -qi microsoft /proc/version 2>/dev/null; then
     fi
 fi
 
-ESP_PORT=""
-# 1. Nếu người dùng truyền cổng trực tiếp qua tham số (ví dụ: ./run.sh /dev/ttyUSB1)
-for arg in "$@"; do
-    if [[ "$arg" == /dev/tty* ]] && [ -e "$arg" ]; then
-        ESP_PORT="$arg"
-        break
-    fi
-done
+ESP_PORT="$CLI_ESP_PORT"
 
 # 2. Tự động dò tìm cổng ESP32 khả dụng thực tế:
 # Kiểm tra mở cổng thực tế (os.open) để loại bỏ hoàn toàn các file node "ma" (stale node)
@@ -301,7 +405,7 @@ fi
 export GZ_IP=127.0.0.1
 export GZ_PARTITION="drone_hitl"
 
-if [ "$1" = "--split" ]; then
+if [ "$SPLIT_MODE" = true ]; then
     echo -e "${YELLOW}[*] Khởi động Gazebo Server (Headless)...${NC}"
     gz sim -s -r "$WORLD_SDF" &
     GAZEBO_PID=$!
@@ -317,7 +421,7 @@ fi
 # Chờ Gazebo sẵn sàng
 for i in $(seq 1 30); do
     kill -0 "$GAZEBO_PID" 2>/dev/null || { echo -e "${RED}[✗] Gazebo crash!${NC}"; exit 1; }
-    gz topic -l 2>/dev/null | grep -q "/x500/odometry" && break
+    gz topic -l 2>/dev/null | grep -qE "/x500/odometry|imu_sensor/imu" && break
     sleep 1
 done
 echo -e "${GREEN}[✓] Gazebo đã sẵn sàng!${NC}"
@@ -376,6 +480,8 @@ fi
 
 # Hiển thị hướng dẫn
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}${BOLD}  🧠 THUẬT TOÁN ESP32: $ALGO_LABEL${NC}"
+echo -e "${CYAN}${BOLD}  📡 NGUỒN DỮ LIỆU:   $STATE_SOURCE_LABEL${NC}"
 if [ -n "$AUTO_FLAG" ]; then
     echo -e "${GREEN}${BOLD}  🤖 CHẾ ĐỘ BAY: TỰ ĐỘNG (--auto)${NC}"
     echo -e "     • QGroundControl: Được phép Guided (Click & Fly) & nạp Waypoints"
@@ -405,6 +511,6 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${YELLOW}  Ctrl+C để tắt tất cả${NC}"
 echo ""
 
-# Chạy bridge với cờ chế độ (nếu có)
-"$BRIDGE_BIN" "$ESP_PORT" $AUTO_FLAG
+# Chạy bridge với cờ chế độ & thuật toán đã chọn
+"$BRIDGE_BIN" "$ESP_PORT" $AUTO_FLAG $ESTIMATOR_FLAG --algo "$ALGO_ARG"
 cleanup

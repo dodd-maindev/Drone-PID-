@@ -18,8 +18,17 @@ enum ControlFlagBits : uint8_t {
 };
 
 /**
+ * @brief Lựa chọn thuật toán điều khiển bay chạy trực tiếp trên ESP32
+ */
+enum ControlAlgoMode : uint8_t {
+    ALGO_ITSMC     = 0, // Integral Terminal Sliding Mode Control
+    ALGO_RL_CRITIC = 1, // Online Critic-Only RL + ESO (on_critic_only.m)
+    ALGO_PID       = 2  // Classical PID Controller
+};
+
+/**
  * @brief Gói tin cảm biến và lệnh lái từ PC sang ESP32 (SensorPacket)
- * Kích thước: 2 + 12 + 12 + 12 + 12 + 16 + 1 + 1 = 68 bytes
+ * Kích thước: 2 + 12 + 12 + 12 + 12 + 16 + 1 + 1 + 1 = 69 bytes
  */
 struct SensorPacket {
     uint8_t header[2];      // Đồng bộ: 0xAA, 0x55
@@ -48,6 +57,7 @@ struct SensorPacket {
     float cmd_yaw_rate;     // Tốc độ xoay đầu mong muốn (rad/s)
 
     uint8_t flags;          // Cờ điều khiển (ControlFlagBits)
+    uint8_t algo_mode;      // Thuật toán điều khiển (ControlAlgoMode)
     uint8_t checksum;       // Mã kiểm lỗi XOR toàn bộ gói
 };
 
@@ -68,7 +78,7 @@ struct ActuatorPacket {
     float target_pitch_deg; // Góc Pitch mục tiêu do PositionController tính ra
     float target_roll_deg;  // Góc Roll mục tiêu do PositionController tính ra
 
-    uint8_t status_flags;   // Bit 0: Is Armed, Bit 1: Is Braking, Bit 2: Is Hover
+    uint8_t status_flags;   // Bit 0: Is Armed, Bit 1: Is Braking, Bit 2: Is Hover, Bits 4-5: Active ControlAlgoMode (0=ITSMC, 1=RL, 2=PID)
     uint8_t checksum;       // Mã kiểm lỗi XOR
 };
 

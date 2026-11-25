@@ -14,6 +14,12 @@ enum ControlFlagBits : uint8_t {
     CTRL_FLAG_LAND        = 1 << 6
 };
 
+enum ControlAlgoMode : uint8_t {
+    ALGO_ITSMC     = 0, // Integral Terminal Sliding Mode Control
+    ALGO_RL_CRITIC = 1, // Online Critic-Only RL + ESO (on_critic_only.m)
+    ALGO_PID       = 2  // Classical PID Controller
+};
+
 struct SensorPacket {
     uint8_t header[2];      // 0xAA, 0x55
 
@@ -39,6 +45,7 @@ struct SensorPacket {
     float cmd_yaw_rate;
 
     uint8_t flags;
+    uint8_t algo_mode;
     uint8_t checksum;
 };
 
@@ -53,7 +60,7 @@ struct ActuatorPacket {
     float target_pitch_deg;
     float target_roll_deg;
 
-    uint8_t status_flags;
+    uint8_t status_flags;   // Bit 0: Is Armed, Bit 1: Is Braking, Bit 2: Is Hover, Bits 4-5: Active ControlAlgoMode (0=ITSMC, 1=RL, 2=PID)
     uint8_t checksum;
 };
 

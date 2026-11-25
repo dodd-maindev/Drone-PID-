@@ -238,19 +238,39 @@ void TrajectoryLogger::stop() {
     }
     is_logging_ = false;
 
-    // Sao chép sang latest_trajectory.csv và đồng bộ sang DroneHITL/logs/trajectory
+    // Sao chép sang latest_trajectory.csv và đồng bộ sang DroneHITL/<log_dir> + logs/trajectory
     try {
         std::filesystem::copy_file(
             current_log_path_, latest_log_path_,
             std::filesystem::copy_options::overwrite_existing
         );
 
-        std::string win_copy_dir = "DroneHITL/logs/trajectory";
+        std::filesystem::path cur_path(current_log_path_);
+        std::filesystem::path rel_dir = cur_path.parent_path();
+        std::string win_copy_dir = (std::filesystem::path("DroneHITL") / rel_dir).string();
         std::filesystem::create_directories(win_copy_dir);
+        std::filesystem::copy_file(
+            current_log_path_, win_copy_dir + "/" + cur_path.filename().string(),
+            std::filesystem::copy_options::overwrite_existing
+        );
         std::filesystem::copy_file(
             latest_log_path_, win_copy_dir + "/latest_trajectory.csv",
             std::filesystem::copy_options::overwrite_existing
         );
+
+        // Giữ bản tương thích ngược ở logs/trajectory/latest_trajectory.csv & DroneHITL/logs/trajectory/latest_trajectory.csv
+        if (rel_dir.string() != "logs/trajectory") {
+            std::filesystem::create_directories("logs/trajectory");
+            std::filesystem::copy_file(
+                latest_log_path_, "logs/trajectory/latest_trajectory.csv",
+                std::filesystem::copy_options::overwrite_existing
+            );
+            std::filesystem::create_directories("DroneHITL/logs/trajectory");
+            std::filesystem::copy_file(
+                latest_log_path_, "DroneHITL/logs/trajectory/latest_trajectory.csv",
+                std::filesystem::copy_options::overwrite_existing
+            );
+        }
     } catch (...) {
     }
 

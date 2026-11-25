@@ -23,6 +23,7 @@
 #include "math_utils.hpp"
 #include "mavlink_telemetry.hpp"
 #include "itsmc_controller.hpp"
+#include "rl_critic_controller.hpp"
 #include "wifi_credential_storage.h"
 #include "wifi_scanner_service.h"
 #include "wifi_serial_configurator.h" 
@@ -445,6 +446,10 @@ static DroneControl::ITSMCAltitudeController g_itsmc_alt(
     ITSMC::ALT_PHI_B, ITSMC::ALT_EPS_LIN
 );
 
+static DroneControl::RLCriticPositionController g_rl_pos_controller;
+static DroneControl::RLCriticAttitudeController g_rl_att_controller;
+static ControlAlgoMode g_active_algo = ITSMC::ENABLE_ITSMC ? ALGO_ITSMC : ALGO_PID;
+
 static portMUX_TYPE g_data_mutex = portMUX_INITIALIZER_UNLOCKED;
 static SensorPacket g_sensor_data;
 static volatile bool g_connected = false;
@@ -504,8 +509,28 @@ void flight_control_task(void* pvParameters) {
         if (!g_init_yaw_done) {
             g_target_yaw_rad = s.yaw;
             g_pos_controller.set_anchor(s.x, s.y);
+            g_rl_pos_controller.set_anchor(s.x, s.y, s.z);
             g_target_alt = s.z;
             g_init_yaw_done = true;
+        }
+
+        // Chuyển đổi động thuật toán điều khiển theo lệnh PC (1: ITSMC, 2: RL Critic + ESO, 3: PID)
+        ControlAlgoMode req_algo = (s.algo_mode <= ALGO_PID)
+                                       ? static_cast<ControlAlgoMode>(s.algo_mode)
+                                       : (ITSMC::ENABLE_ITSMC ? ALGO_ITSMC : ALGO_PID);
+        if (req_algo != g_active_algo) {
+            g_int_roll = 0.0f;
+            g_int_pitch = 0.0f;
+            g_itsmc_roll.reset();
+            g_itsmc_pitch.reset();
+            g_itsmc_yaw.reset();
+            g_itsmc_alt.reset();
+            g_alt_controller.reset();
+            g_rl_pos_controller.reset();
+            g_rl_att_controller.reset();
+            g_pos_controller.set_anchor(s.x, s.y);
+            g_rl_pos_controller.set_anchor(s.x, s.y, g_target_alt);
+            g_active_algo = req_algo;
         }
 
         // 1. Quản lý cờ ARM / DISARM
@@ -526,6 +551,7 @@ void flight_control_task(void* pvParameters) {
                 g_flight_state = DroneFlightState::GROUND_IDLE;
                 g_target_alt = s.z;
                 g_pos_controller.set_anchor(s.x, s.y);
+                g_rl_pos_controller.set_anchor(s.x, s.y, s.z);
             }
         }
 
@@ -537,6 +563,8 @@ void flight_control_task(void* pvParameters) {
             g_itsmc_pitch.reset();
             g_itsmc_yaw.reset();
             g_itsmc_alt.reset();
+            g_rl_pos_controller.reset();
+            g_rl_att_controller.reset();
             g_land_stick_held_start_ms = 0;
             g_target_alt = s.z;
         }
@@ -549,6 +577,8 @@ void flight_control_task(void* pvParameters) {
                 g_flight_state = DroneFlightState::FLYING;
                 g_target_alt = std::max(s.z + 0.10f, 0.25f);
                 g_pos_controller.set_anchor(s.x, s.y);
+                g_rl_pos_controller.set_anchor(s.x, s.y, g_target_alt);
+                g_rl_att_controller.reset();
                 g_itsmc_alt.reset();
             }
 
@@ -614,56 +644,98 @@ void flight_control_task(void* pvParameters) {
 
             bool is_driving_x = (s.flags & CTRL_FLAG_DRIVING_X);
             bool is_driving_y = (s.flags & CTRL_FLAG_DRIVING_Y);
-
-            // 3.1. VÒNG NGOÀI: Điều khiển Vị trí X/Y -> Ra góc nghiêng mong muốn (Roll, Pitch)
-            pos_out = g_pos_controller.update(
-                s.x, s.y, s.vx, s.vy, s.yaw,
-                s.cmd_vx, s.cmd_vy, is_driving_x, is_driving_y,
-                Position::MAX_TILT_DRIVING_DEG, Timing::DT
-            );
-
-            // 3.2. Điều khiển Lực nâng thẳng đứng (Altitude Controller: ITSMC hoặc PID)
-            float total_thrust = 0.0f;
-            if (ITSMC::ENABLE_ITSMC) {
-                total_thrust = g_itsmc_alt.compute_thrust(g_target_alt, s.z, s.vz, Timing::DT);
-            } else {
-                total_thrust = g_alt_controller.compute_thrust(g_target_alt, s.z, s.vz, Timing::DT);
+            bool alt_active_now = (s.flags & CTRL_FLAG_ALT_ACTIVE);
+            float target_vz_for_rl = 0.0f;
+            if (s.flags & CTRL_FLAG_TAKEOFF) {
+                target_vz_for_rl = FlightLogic::TAKEOFF_STEP_PER_TICK / Timing::DT;
+            } else if (s.flags & CTRL_FLAG_LAND) {
+                target_vz_for_rl = -FlightLogic::LAND_STEP_PER_TICK / Timing::DT;
+            } else if (alt_active_now) {
+                target_vz_for_rl = s.cmd_alt_vel;
             }
-            float cos_tilt = std::max(Altitude::MIN_COS_TILT, std::cos(s.roll) * std::cos(s.pitch));
-            float effective_thrust = total_thrust / cos_tilt;
 
+            float effective_thrust = Altitude::HOVER_THRUST;
             float target_r_rad = 0.0f;
             float target_p_rad = 0.0f;
-            if (s.z > FlightLogic::MIN_TAKEOFF_ALT_FOR_TILT) {
-                target_r_rad = DroneMath::deg2rad(pos_out.roll_deg);
-                target_p_rad = DroneMath::deg2rad(pos_out.pitch_deg);
-            } else {
-                g_pos_controller.set_anchor(s.x, s.y);
-            }
-
-            // 3.3. VÒNG TRONG: Điều khiển Góc thái độ (ITSMC hoặc PID)
             float tau_roll  = 0.0f;
             float tau_pitch = 0.0f;
             float tau_yaw   = 0.0f;
 
-            if (ITSMC::ENABLE_ITSMC) {
-                tau_roll  = g_itsmc_roll.update(target_r_rad, s.roll, s.p, Timing::DT);
-                tau_pitch = g_itsmc_pitch.update(target_p_rad, s.pitch, s.q, Timing::DT);
-                float err_yaw = DroneMath::normalize_angle(g_target_yaw_rad - s.yaw);
-                tau_yaw   = g_itsmc_yaw.update_error(err_yaw, s.r, Timing::DT);
+            if (g_active_algo == ALGO_RL_CRITIC) {
+                // THUẬT TOÁN HỌC TĂNG CƯỜNG CRITIC-ONLY + ESO (on_critic_only.m)
+                auto rl_pos_out = g_rl_pos_controller.update(
+                    s.x, s.y, s.z, s.vx, s.vy, s.vz, s.yaw,
+                    s.cmd_vx, s.cmd_vy, is_driving_x, is_driving_y,
+                    g_target_alt, target_vz_for_rl,
+                    Position::MAX_TILT_DRIVING_DEG, Timing::DT
+                );
+                pos_out.roll_deg   = rl_pos_out.roll_deg;
+                pos_out.pitch_deg  = rl_pos_out.pitch_deg;
+                pos_out.is_hover   = rl_pos_out.is_hover;
+                pos_out.is_braking = rl_pos_out.is_braking;
+                pos_out.anchor_x   = rl_pos_out.anchor_x;
+                pos_out.anchor_y   = rl_pos_out.anchor_y;
+
+                // uT = ||up|| đã bao gồm bù góc nghiêng, không chia lại cos_tilt
+                effective_thrust = rl_pos_out.total_thrust;
+
+                if (s.z > FlightLogic::MIN_TAKEOFF_ALT_FOR_TILT) {
+                    target_r_rad = DroneMath::deg2rad(pos_out.roll_deg);
+                    target_p_rad = DroneMath::deg2rad(pos_out.pitch_deg);
+                } else {
+                    g_rl_pos_controller.set_anchor(s.x, s.y, g_target_alt);
+                }
+
+                g_rl_att_controller.update(
+                    target_r_rad, target_p_rad, g_target_yaw_rad,
+                    s.roll, s.pitch, s.yaw, s.p, s.q, s.r,
+                    Timing::DT, tau_roll, tau_pitch, tau_yaw
+                );
             } else {
-                float err_roll = target_r_rad - s.roll;
-                g_int_roll += err_roll * Timing::DT;
-                g_int_roll = DroneMath::clamp(g_int_roll, -Attitude::INT_ATT_LIMIT, Attitude::INT_ATT_LIMIT);
-                tau_roll = Attitude::KP_ATT * err_roll + Attitude::KI_ATT * g_int_roll - Attitude::KD_ATT * s.p;
+                // 3.1. VÒNG NGOÀI: Điều khiển Vị trí X/Y -> Ra góc nghiêng mong muốn (Roll, Pitch)
+                pos_out = g_pos_controller.update(
+                    s.x, s.y, s.vx, s.vy, s.yaw,
+                    s.cmd_vx, s.cmd_vy, is_driving_x, is_driving_y,
+                    Position::MAX_TILT_DRIVING_DEG, Timing::DT
+                );
 
-                float err_pitch = target_p_rad - s.pitch;
-                g_int_pitch += err_pitch * Timing::DT;
-                g_int_pitch = DroneMath::clamp(g_int_pitch, -Attitude::INT_ATT_LIMIT, Attitude::INT_ATT_LIMIT);
-                tau_pitch = Attitude::KP_ATT * err_pitch + Attitude::KI_ATT * g_int_pitch - Attitude::KD_ATT * s.q;
+                // 3.2. Điều khiển Lực nâng thẳng đứng (Altitude Controller: ITSMC hoặc PID)
+                float total_thrust = 0.0f;
+                if (g_active_algo == ALGO_ITSMC) {
+                    total_thrust = g_itsmc_alt.compute_thrust(g_target_alt, s.z, s.vz, Timing::DT);
+                } else {
+                    total_thrust = g_alt_controller.compute_thrust(g_target_alt, s.z, s.vz, Timing::DT);
+                }
+                float cos_tilt = std::max(Altitude::MIN_COS_TILT, std::cos(s.roll) * std::cos(s.pitch));
+                effective_thrust = total_thrust / cos_tilt;
 
-                float err_yaw = DroneMath::normalize_angle(g_target_yaw_rad - s.yaw);
-                tau_yaw = Attitude::KP_YAW * err_yaw - Attitude::KD_YAW * s.r;
+                if (s.z > FlightLogic::MIN_TAKEOFF_ALT_FOR_TILT) {
+                    target_r_rad = DroneMath::deg2rad(pos_out.roll_deg);
+                    target_p_rad = DroneMath::deg2rad(pos_out.pitch_deg);
+                } else {
+                    g_pos_controller.set_anchor(s.x, s.y);
+                }
+
+                // 3.3. VÒNG TRONG: Điều khiển Góc thái độ (ITSMC hoặc PID)
+                if (g_active_algo == ALGO_ITSMC) {
+                    tau_roll  = g_itsmc_roll.update(target_r_rad, s.roll, s.p, Timing::DT);
+                    tau_pitch = g_itsmc_pitch.update(target_p_rad, s.pitch, s.q, Timing::DT);
+                    float err_yaw = DroneMath::normalize_angle(g_target_yaw_rad - s.yaw);
+                    tau_yaw   = g_itsmc_yaw.update_error(err_yaw, s.r, Timing::DT);
+                } else {
+                    float err_roll = target_r_rad - s.roll;
+                    g_int_roll += err_roll * Timing::DT;
+                    g_int_roll = DroneMath::clamp(g_int_roll, -Attitude::INT_ATT_LIMIT, Attitude::INT_ATT_LIMIT);
+                    tau_roll = Attitude::KP_ATT * err_roll + Attitude::KI_ATT * g_int_roll - Attitude::KD_ATT * s.p;
+
+                    float err_pitch = target_p_rad - s.pitch;
+                    g_int_pitch += err_pitch * Timing::DT;
+                    g_int_pitch = DroneMath::clamp(g_int_pitch, -Attitude::INT_ATT_LIMIT, Attitude::INT_ATT_LIMIT);
+                    tau_pitch = Attitude::KP_ATT * err_pitch + Attitude::KI_ATT * g_int_pitch - Attitude::KD_ATT * s.q;
+
+                    float err_yaw = DroneMath::normalize_angle(g_target_yaw_rad - s.yaw);
+                    tau_yaw = Attitude::KP_YAW * err_yaw - Attitude::KD_YAW * s.r;
+                }
             }
 
             // Giới hạn mô-men xoắn ngõ ra
@@ -695,6 +767,7 @@ void flight_control_task(void* pvParameters) {
         if (g_flight_state != DroneFlightState::DISARMED) out_pkt.status_flags |= 1;
         if (pos_out.is_braking) out_pkt.status_flags |= 2;
         if (pos_out.is_hover) out_pkt.status_flags |= 4;
+        out_pkt.status_flags |= static_cast<uint8_t>((static_cast<uint8_t>(g_active_algo) & 0x03) << 4);
         out_pkt.checksum = compute_packet_checksum((uint8_t*)&out_pkt + 2, sizeof(out_pkt) - 3);
 
         Serial.write((uint8_t*)&out_pkt, sizeof(out_pkt));
@@ -839,7 +912,7 @@ void setup() {
     xTaskCreate(
         flight_control_task,
         "FlightTask",
-        4096,
+        6144,
         NULL,
         2,
         NULL
@@ -848,7 +921,7 @@ void setup() {
     xTaskCreatePinnedToCore(
         flight_control_task,
         "FlightTask",
-        4096,
+        6144,
         NULL,
         2,
         NULL,
