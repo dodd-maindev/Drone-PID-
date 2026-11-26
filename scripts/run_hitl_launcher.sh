@@ -23,13 +23,25 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 # Kiểm tra tham số dòng lệnh chế độ tự động (--auto hoặc -a) và thuật toán (--algo)
 AUTO_FLAG=""
 ESTIMATOR_FLAG=""
+FORMATION_MODE=false
+NO_ESP32_FLAG=""
 ALGO_ARG=""
 CLI_ESP_PORT=""
 SPLIT_MODE=false
+SW_RENDER=false
+RENDER_ENGINE_CHOICE=""
+RENDER_ENGINE_FLAG=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --auto|-a)
             AUTO_FLAG="--auto"
+            ;;
+        --formation|-f)
+            FORMATION_MODE=true
+            ALGO_ARG="formation"
+            ;;
+        --no-esp32)
+            NO_ESP32_FLAG="--no-esp32"
             ;;
         --no-estimator|--world-odom)
             ESTIMATOR_FLAG="--no-estimator"
@@ -45,6 +57,15 @@ while [ $# -gt 0 ]; do
             ;;
         --split)
             SPLIT_MODE=true
+            ;;
+        --sw-render)
+            SW_RENDER=true
+            ;;
+        --ogre1)
+            RENDER_ENGINE_CHOICE="ogre"
+            ;;
+        --ogre2)
+            RENDER_ENGINE_CHOICE="ogre2"
             ;;
         --algo)
             if [ -n "$2" ]; then
@@ -84,6 +105,7 @@ cleanup() {
     pkill -f "web_oscilloscope/server.py" 2>/dev/null || true
     pkill -f xbox_controller_bridge.exe 2>/dev/null || true
     pkill -9 -f 06_hitl_esp32_bridge 2>/dev/null || true
+    pkill -9 -f 07_hitl_formation_bridge 2>/dev/null || true
     # Giải phóng cưỡng bức mọi tiến trình đang giữ cổng Serial để kernel trả về ttyUSB0
     fuser -k /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true
     powershell.exe -NoProfile -Command "Stop-Process -Name 'XboxBridge' -ErrorAction SilentlyContinue; Stop-Process -Name 'xbox_controller_bridge' -ErrorAction SilentlyContinue" 2>/dev/null || true
@@ -114,19 +136,28 @@ if [ -z "$ALGO_ARG" ]; then
     echo -e "║  ${CYAN}1.${NC} ITSMC (Integral Terminal Sliding Mode Control)          ║"
     echo -e "║  ${CYAN}2.${NC} RL Critic-Only + ESO (Học tăng cường trực tuyến)        ║"
     echo -e "║  ${CYAN}3.${NC} PID (Bộ điều khiển PID cổ điển)                        ║"
+    echo -e "║  ${CYAN}4.${NC} 4-Drone Distributed Formation (Consensus + SMC + HGO)   ║"
     echo -e "${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     while true; do
-        read -r -p "Nhập lựa chọn [1-3] (Mặc định 1): " ALGO_CHOICE
+        read -r -p "Nhập lựa chọn [1-4] (Mặc định 1): " ALGO_CHOICE
         case "$ALGO_CHOICE" in
             ""|"1") ALGO_ARG="itsmc"; break ;;
             "2")    ALGO_ARG="rl";    break ;;
             "3")    ALGO_ARG="pid";   break ;;
-            *)      echo -e "${RED}[!] Lựa chọn không hợp lệ. Vui lòng nhập 1, 2 hoặc 3.${NC}" ;;
+            "4")    ALGO_ARG="formation"; FORMATION_MODE=true; break ;;
+            *)      echo -e "${RED}[!] Lựa chọn không hợp lệ. Vui lòng nhập 1, 2, 3 hoặc 4.${NC}" ;;
         esac
     done
 fi
 
 case "$ALGO_ARG" in
+    formation|FORMATION|4|swarm)
+        FORMATION_MODE=true
+        ALGO_ARG="itsmc"
+        ALGO_LABEL="4-Drone Distributed Formation (Consensus + SMC + HGO + ESP32 ITSMC)"
+        BRIDGE_BIN="$PROJECT_DIR/bin/07_hitl_formation_bridge"
+        WORLD_SDF="$PROJECT_DIR/simulation/worlds/drone_formation_world.sdf"
+        ;;
     rl|RL|2|critic|rl_critic|rl-critic)
         ALGO_ARG="rl"
         ALGO_LABEL="RL Critic-Only + ESO (on_critic_only.m)"
@@ -360,14 +391,13 @@ GPU_INFO=""
 D3D12_OK=false
 
 # Kiểm tra GPU Passthrough D3D12 trên WSL2 (chỉ kích hoạt nếu phần cứng và thư viện thực sự hoạt động)
-if grep -qi microsoft /proc/version 2>/dev/null && ([ -d "/usr/lib/wsl/lib" ] || [ -d "/dev/dri" ]); then
+if [ "$SW_RENDER" = false ] && grep -qi microsoft /proc/version 2>/dev/null && ([ -d "/usr/lib/wsl/lib" ] || [ -d "/dev/dri" ]); then
     sudo chmod 666 /dev/dri/* 2>/dev/null || true
     # Kiểm tra xem D3D12 có tạo được OpenGL context thực tế không (tránh crash Qt)
     if command -v glxinfo &>/dev/null && GALLIUM_DRIVER=d3d12 LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH" glxinfo -B &>/dev/null; then
         export GALLIUM_DRIVER=d3d12
         export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
         export QT_QPA_PLATFORM=xcb
-        export LIBGL_DRI3_DISABLE=1
         D3D12_OK=true
         if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
             export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
@@ -384,21 +414,33 @@ if [ "$D3D12_OK" = false ]; then
     unset GALLIUM_DRIVER
     unset MESA_D3D12_DEFAULT_ADAPTER_NAME
     
-    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+    if [ "$SW_RENDER" = false ] && command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
         NV_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
         GPU_INFO="NVIDIA Native ($NV_NAME)"
         echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
-    elif lspci 2>/dev/null | grep -qi "AMD.*VGA\|Radeon"; then
+    elif [ "$SW_RENDER" = false ] && lspci 2>/dev/null | grep -qi "AMD.*VGA\|Radeon"; then
         GPU_INFO="AMD $(lspci 2>/dev/null | grep -i 'vga\|3d' | grep -i amd | head -1 | sed 's/.*: //')"
         echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
-    elif lspci 2>/dev/null | grep -qi "Intel.*VGA\|Intel.*Graphics"; then
+    elif [ "$SW_RENDER" = false ] && lspci 2>/dev/null | grep -qi "Intel.*VGA\|Intel.*Graphics"; then
         GPU_INFO="Intel $(lspci 2>/dev/null | grep -i 'vga\|3d' | grep -i intel | head -1 | sed 's/.*: //')"
         echo -e "${GREEN}[✓] GPU: $GPU_INFO${NC}"
     else
         GPU_INFO="Mesa Software Rendering (llvmpipe)"
         export LIBGL_ALWAYS_SOFTWARE=1
-        echo -e "${YELLOW}[ℹ] D3D12 passthrough không khả dụng — dùng $GPU_INFO${NC}"
+        echo -e "${YELLOW}[ℹ] Chế độ render phần mềm — dùng $GPU_INFO${NC}"
     fi
+fi
+
+# Chọn Render Engine cho Gazebo (mặc định Ogre 2 khớp MinimalScene của Gazebo Harmonic để tránh màn hình trắng)
+if [ "$RENDER_ENGINE_CHOICE" = "ogre" ]; then
+    RENDER_ENGINE_FLAG="--render-engine ogre"
+    echo -e "${YELLOW}[ℹ] Render Engine: Ogre 1 (theo tùy chọn --ogre1)${NC}"
+elif [ "$RENDER_ENGINE_CHOICE" = "ogre2" ]; then
+    RENDER_ENGINE_FLAG=""
+    echo -e "${GREEN}[✓] Render Engine: Ogre 2 (theo tùy chọn --ogre2)${NC}"
+else
+    RENDER_ENGINE_FLAG=""
+    echo -e "${GREEN}[✓] Render Engine: Ogre 2 (Mặc định Gazebo Harmonic)${NC}"
 fi
 
 # Ép gz-transport chạy trên loopback 127.0.0.1 (ngăn rớt gói dynamic_pose trên mạng ảo WSL2)
@@ -407,14 +449,14 @@ export GZ_PARTITION="drone_hitl"
 
 if [ "$SPLIT_MODE" = true ]; then
     echo -e "${YELLOW}[*] Khởi động Gazebo Server (Headless)...${NC}"
-    gz sim -s -r "$WORLD_SDF" &
+    gz sim -s -r $RENDER_ENGINE_FLAG "$WORLD_SDF" &
     GAZEBO_PID=$!
     sleep 2
     echo -e "${YELLOW}[*] Khởi động Gazebo GUI riêng biệt...${NC}"
-    gz sim -g &
+    gz sim -g $RENDER_ENGINE_FLAG &
     GUI_PID=$!
 else
-    gz sim -r "$WORLD_SDF" &
+    gz sim -r $RENDER_ENGINE_FLAG "$WORLD_SDF" &
     GAZEBO_PID=$!
 fi
 
@@ -426,13 +468,15 @@ for i in $(seq 1 30); do
 done
 echo -e "${GREEN}[✓] Gazebo đã sẵn sàng!${NC}"
 
-# Tự động kích hoạt Camera bám theo Drone (góc nhìn thứ 3 - Follow Mode)
-(
-    for i in $(seq 1 20); do
-        sleep 1
-        gz topic -t /gui/track -m gz.msgs.CameraTrack -p 'track_mode: 2, follow_target: {name: "x500", type: 2}, follow_offset: {x: -3.5, y: 0.0, z: 1.8}, follow_pgain: 0.08' &>/dev/null || true
-    done
-) &
+# Tự động kích hoạt Camera bám theo Drone (góc nhìn thứ 3 - Follow Mode ở chế độ 1 drone)
+if [ "$FORMATION_MODE" != true ]; then
+    (
+        for i in $(seq 1 20); do
+            sleep 1
+            gz topic -t /gui/track -m gz.msgs.CameraTrack -p 'track_mode: 2, follow_target: {name: "x500", type: 2}, follow_offset: {x: -3.5, y: 0.0, z: 1.8}, follow_pgain: 0.08' &>/dev/null || true
+        done
+    ) &
+fi
 
 # Khởi động Trạm đo Oscilloscope & Telemetry Web (Cổng 8088)
 OSC_SERVER="$PROJECT_DIR/tools/web_oscilloscope/server.py"
@@ -474,8 +518,14 @@ elif command -v qgroundcontrol &>/dev/null; then
 fi
 
 # Đồng bộ binary HITL Bridge mới nhất nếu có trong build/
-if [ -f "$PROJECT_DIR/build/06_hitl_esp32_bridge" ]; then
-    cp -u "$PROJECT_DIR/build/06_hitl_esp32_bridge" "$BRIDGE_BIN" 2>/dev/null || true
+if [ "$FORMATION_MODE" = true ]; then
+    if [ -f "$PROJECT_DIR/build/07_hitl_formation_bridge" ]; then
+        cp -u "$PROJECT_DIR/build/07_hitl_formation_bridge" "$BRIDGE_BIN" 2>/dev/null || true
+    fi
+else
+    if [ -f "$PROJECT_DIR/build/06_hitl_esp32_bridge" ]; then
+        cp -u "$PROJECT_DIR/build/06_hitl_esp32_bridge" "$BRIDGE_BIN" 2>/dev/null || true
+    fi
 fi
 
 # Hiển thị hướng dẫn
@@ -497,20 +547,31 @@ echo -e "${BOLD}  📊 TRẠM ĐO SÓNG & ĐIỀU KHIỂN:${NC}"
 echo -e "    ${GREEN}✓ Web Oscilloscope:${NC} http://localhost:8088"
 echo -e "    ${GREEN}✓ QGroundControl:${NC}   Kết nối tự động qua UDP 14550"
 echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-echo -e "${BOLD}  🎮 QUY TRÌNH ĐIỀU KHIỂN TAY CẦM XBOX 360:${NC}"
-echo -e "    1. Bấm ${BOLD}Y${NC}                  : ARM động cơ (quay nhẹ tại chỗ 200 rad/s)"
-echo -e "    2. Đẩy ${BOLD}Stick trái ↑${NC}     : Tăng ga cất cánh mượt mà"
-echo -e "    3. Kéo ${BOLD}Stick trái ↓${NC}     : Hạ cánh an toàn (chạm đất tự về Idle)"
-echo -e "    4. Giữ ${BOLD}Stick trái ↓ kịch sàn 1.5s${NC} (hoặc bấm Y): DISARM tắt máy"
-echo -e "    • Stick phải                 : Di chuyển (Tiến/Lùi/Trái/Phải)"
-echo -e "    • Stick trái ↔ hoặc X / B    : Xoay Yaw góc hướng"
-echo -e "    • Phím A                     : Hạ cánh tự động (Auto-Land)"
-echo -e "    • Phím BACK / SPACE          : Phanh khẩn cấp / DISARM"
-echo -e "    • LB + Stick phải            : LỘN NHÀO 360° (ACRO FLIP)"
+if [ "$FORMATION_MODE" = true ]; then
+    echo -e "${BOLD}  🛸 ĐIỀU KHIỂN ĐỘI HÌNH 4 DRONE:${NC}"
+    echo -e "    • ${GREEN}${BOLD}Phím [1]${NC} : Cất cánh & xếp đội hình Kim cương (bay lên 5m)"
+    echo -e "    • ${YELLOW}${BOLD}Phím [0]${NC} : Hạ cánh an toàn cả 4 Drone về Standby"
+    echo -e "    • Ban đầu cả 4 Drone nằm yên (STANDBY) chờ bạn nhấn phím [1]"
+else
+    echo -e "${BOLD}  🎮 QUY TRÌNH ĐIỀU KHIỂN TAY CẦM XBOX 360:${NC}"
+    echo -e "    1. Bấm ${BOLD}Y${NC}                  : ARM động cơ (quay nhẹ tại chỗ 200 rad/s)"
+    echo -e "    2. Đẩy ${BOLD}Stick trái ↑${NC}     : Tăng ga cất cánh mượt mà"
+    echo -e "    3. Kéo ${BOLD}Stick trái ↓${NC}     : Hạ cánh an toàn (chạm đất tự về Idle)"
+    echo -e "    4. Giữ ${BOLD}Stick trái ↓ kịch sàn 1.5s${NC} (hoặc bấm Y): DISARM tắt máy"
+    echo -e "    • Stick phải                 : Di chuyển (Tiến/Lùi/Trái/Phải)"
+    echo -e "    • Stick trái ↔ hoặc X / B    : Xoay Yaw góc hướng"
+    echo -e "    • Phím A                     : Hạ cánh tự động (Auto-Land)"
+    echo -e "    • Phím BACK / SPACE          : Phanh khẩn cấp / DISARM"
+    echo -e "    • LB + Stick phải            : LỘN NHÀO 360° (ACRO FLIP)"
+fi
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}  Ctrl+C để tắt tất cả${NC}"
 echo ""
 
 # Chạy bridge với cờ chế độ & thuật toán đã chọn
-"$BRIDGE_BIN" "$ESP_PORT" $AUTO_FLAG $ESTIMATOR_FLAG --algo "$ALGO_ARG"
+if [ "$FORMATION_MODE" = true ]; then
+    "$BRIDGE_BIN" "$ESP_PORT" $ESTIMATOR_FLAG $NO_ESP32_FLAG --algo "$ALGO_ARG"
+else
+    "$BRIDGE_BIN" "$ESP_PORT" $AUTO_FLAG $ESTIMATOR_FLAG --algo "$ALGO_ARG"
+fi
 cleanup

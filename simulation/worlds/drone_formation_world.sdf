@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <world name="default">
+    <!-- CẤU HÌNH VẬT LÝ ODE SIÊU MƯỢT (250Hz, quick solver 25 iters) -->
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+      <ode>
+        <solver>
+          <type>quick</type>
+          <iters>25</iters>
+          <sor>1.3</sor>
+        </solver>
+        <constraints>
+          <cfm>0.00001</cfm>
+          <erp>0.2</erp>
+          <contact_max_correcting_vel>100.0</contact_max_correcting_vel>
+          <contact_surface_layer>0.001</contact_surface_layer>
+        </constraints>
+      </ode>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+
+    <!-- Hệ thống Physics & Cảm biến chuẩn PX4 của Gazebo Harmonic -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster">
+      <state_hertz>30</state_hertz>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+    <plugin filename="gz-sim-air-pressure-system" name="gz::sim::systems::AirPressure"/>
+    <plugin filename="gz-sim-magnetometer-system" name="gz::sim::systems::Magnetometer"/>
+
+    <!-- PLUGIN HIỆU ỨNG GIÓ ĐỘNG THỰC TẾ (1.5 m/s trục X, 0.5 m/s trục Y kèm gió giật) -->
+    <wind>
+      <linear_velocity>1.5 0.5 0</linear_velocity>
+    </wind>
+
+    <plugin filename="gz-sim-wind-effects-system" name="gz::sim::systems::WindEffects">
+      <force_approximation_scaling_factor>0.005</force_approximation_scaling_factor>
+      <horizontal>
+        <magnitude>
+          <time_for_rise>4.0</time_for_rise>
+          <sin>
+            <amplitude_percent>0.30</amplitude_percent>
+            <period>6.0</period>
+          </sin>
+        </magnitude>
+        <direction>
+          <time_for_rise>8.0</time_for_rise>
+          <sin>
+            <amplitude>0.3</amplitude>
+            <period>10.0</period>
+          </sin>
+        </direction>
+      </horizontal>
+    </plugin>
+
+    <!-- Camera mặc định khi mở Gazebo -->
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>-12.0 0 9.0 0 0.55 0</pose>
+        <clip>
+          <near>0.15</near>
+          <far>800.0</far>
+        </clip>
+      </camera>
+    </gui>
+
+    <!-- Bầu trời trong xanh & Ánh sáng mặt trời (Shadows off để tối ưu mượt mà 60 FPS) -->
+    <scene>
+      <grid>false</grid>
+      <ambient>0.65 0.65 0.68 1</ambient>
+      <background>0.62 0.78 0.95 1</background>
+      <shadows>false</shadows>
+    </scene>
+
+    <light name="sunUTC" type="directional">
+      <pose>0 0 500 0 -0 0</pose>
+      <cast_shadows>false</cast_shadows>
+      <intensity>1.35</intensity>
+      <direction>0.3 0.4 -0.85</direction>
+      <diffuse>0.98 0.96 0.90 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+    </light>
+
+    <!-- THẾ GIỚI RỘNG LỚN: MẶT ĐẤT SÂN CỎ 600m x 600m -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>600 600</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction><ode/></friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>600 600</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.28 0.46 0.22 1</ambient>
+            <diffuse>0.32 0.54 0.25 1</diffuse>
+            <specular>0.04 0.04 0.04 1</specular>
+          </material>
+        </visual>
+      </link>
+      <pose>0 0 0 0 0 0</pose>
+    </model>
+
+    <!-- ĐƯỜNG GIAO THÔNG DÀI 200M (Asphalt Highway) -->
+    <model name="asphalt_road">
+      <static>true</static>
+      <link name="link">
+        <!-- Đường chính chạy dọc trục Y -->
+        <visual name="main_road">
+          <pose>18.0 0 0.015 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>8.0 200.0 0.03</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.18 0.20 1</ambient>
+            <diffuse>0.22 0.22 0.24 1</diffuse>
+          </material>
+        </visual>
+        <!-- Vạch sơn vàng tim đường -->
+        <visual name="road_stripes">
+          <pose>18.0 0 0.033 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 190.0 0.005</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.92 0.78 0.1 1</ambient>
+            <diffuse>0.92 0.78 0.1 1</diffuse>
+          </material>
+        </visual>
+        <!-- Đường nhánh bê tông dẫn vào bãi đáp drone chính -->
+        <visual name="driveway_to_helipad">
+          <pose>9.0 0 0.015 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>10.0 3.0 0.03</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.55 0.58 1</ambient>
+            <diffuse>0.60 0.60 0.63 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ============================================================ -->
+    <!-- HỆ THỐNG SÂN ĐÁP ISILAB & LOGO SƠN TRÊN BỀ MẶT               -->
+    <!-- ============================================================ -->
+
+    <!-- BÃI ĐÁP XUẤT PHÁT CHÍNH - TỌA ĐỘ GỐC (0, 0, 0) -->
+    <!-- Logo ISILAB vuông lớn 8m x 8m sơn phẳng bao quanh drone cất cánh -->
+    <include>
+      <name>isilab_central_launchpad</name>
+      <uri>model://isilab_launchpad</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- Biển hiệu Billboard lớn đặt ở lối vào sân bay gần đường chính -->
+    <include>
+      <name>isilab_main_billboard</name>
+      <uri>model://isilab_billboard</uri>
+      <pose>14.0 -10.0 0 0 0 -0.45</pose>
+    </include>
+
+    <!-- Ngoại cảnh gọn nhẹ (2 nhà + 2 xe + 4 cây) giữ FPS cao & không ngốn VRAM WSLg -->
+    <include>
+      <name>house_roadside_1</name>
+      <uri>model://house_2</uri>
+      <pose>28.0 25.0 0 0 0 -1.5708</pose>
+    </include>
+    <include>
+      <name>house_roadside_2</name>
+      <uri>model://house_1</uri>
+      <pose>28.0 -25.0 0 0 0 -1.5708</pose>
+    </include>
+    <include>
+      <name>parked_suv</name>
+      <uri>model://suv</uri>
+      <pose>15.5 12.0 0.03 0 0 1.5708</pose>
+    </include>
+    <include>
+      <name>parked_ambulance</name>
+      <uri>model://ambulance</uri>
+      <pose>15.5 -12.0 0.03 0 0 1.5708</pose>
+    </include>
+    <include><name>oak_near_1</name><uri>model://oak_tree</uri>
+      <pose>-20.0 12.0 0 0 0 2.1</pose></include>
+    <include><name>oak_near_2</name><uri>model://oak_tree</uri>
+      <pose>-20.0 -12.0 0 0 0 -1.2</pose></include>
+    <include><name>pine_obs_1</name><uri>model://pine_tree</uri>
+      <pose>10.0 18.0 0 0 0 0.5</pose></include>
+    <include><name>pine_obs_2</name><uri>model://pine_tree</uri>
+      <pose>-14.0 -20.0 0 0 0 -0.6</pose></include>
+
+    <!-- TỌA ĐỘ ĐỊA LÝ GPS CHUẨN (Zurich / Open Field) -->
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>47.397971057728974</latitude_deg>
+      <longitude_deg>8.546163739800146</longitude_deg>
+      <elevation>0</elevation>
+    </spherical_coordinates>
+
+    <!-- ĐỘI HÌNH 4 DRONE X500 LIGHTWEIGHT (DISTRIBUTED FORMATION) -->
+    <include>
+      <name>x500_1</name>
+      <uri>model://x500</uri>
+      <pose>3.0 2.0 0.12 0 0 0</pose>
+    </include>
+    <include>
+      <name>x500_2</name>
+      <uri>model://x500</uri>
+      <pose>-2.0 3.0 0.12 0 0 0</pose>
+    </include>
+    <include>
+      <name>x500_3</name>
+      <uri>model://x500</uri>
+      <pose>-3.0 -2.0 0.12 0 0 0</pose>
+    </include>
+    <include>
+      <name>x500_4</name>
+      <uri>model://x500</uri>
+      <pose>2.0 -3.0 0.12 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>

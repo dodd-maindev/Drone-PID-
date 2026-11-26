@@ -1,0 +1,1343 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T5]{fontenc}
+\usepackage[vietnamese]{babel}
+\usepackage[margin=1.4cm, top=1.8cm, bottom=1.8cm]{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{amsmath}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\setlength{\emergencystretch}{3em}
+\setlist[itemize]{leftmargin=1.2em, itemsep=0.25em, topsep=0.2em}
+\urlstyle{tt}
+
+% Màu sắc giao diện báo cáo
+\definecolor{PrimaryBlue}{HTML}{1E3A8A}
+\definecolor{AccentTeal}{HTML}{0F766E}
+\definecolor{CodeBg}{HTML}{F8FAFC}
+\definecolor{CodeBorder}{HTML}{CBD5E1}
+\definecolor{MutedText}{HTML}{475569}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=PrimaryBlue,
+    urlcolor=AccentTeal
+}
+
+% Header & Footer
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small\color{MutedText} Báo cáo Kỹ thuật Tổng hợp: Hệ thống Mô phỏng HITL Drone X500}
+\rhead{\small\color{MutedText} \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Định dạng tiêu đề Phần & Mục
+\titleformat{\part}[display]{\Large\bfseries\color{PrimaryBlue}}{\partname\ \thepart}{0.2em}{\LARGE\bfseries\color{PrimaryBlue}}[\vspace{0.3em}\hrule]
+\titleformat{\section}{\Large\bfseries\color{PrimaryBlue}}{\thesection.}{0.5em}{}[\titlerule]
+\titleformat{\subsection}{\large\bfseries\color{AccentTeal}}{\thesubsection}{0.5em}{}
+
+% Cấu hình hiển thị code XML/SDF và C++
+\lstdefinelanguage{SDF}{
+    morekeywords={sdf,world,physics,ode,solver,constraints,plugin,wind,linear_velocity,horizontal,magnitude,sin,direction,gravity,magnetic_field,atmosphere,spherical_coordinates,include,model,link,inertial,mass,inertia,sensor,imu,angular_velocity,linear_acceleration,noise,navsat,position_sensing,velocity_sensing,air_pressure,pressure,magnetometer,joint,axis,limit,dynamics},
+    sensitive=true,
+    morecomment=[s]{<!--}{-->},
+    morestring=[b]",
+    morestring=[b]'
+}
+
+\lstset{
+    basicstyle=\ttfamily\scriptsize,
+    backgroundcolor=\color{CodeBg},
+    frame=single,
+    rulecolor=\color{CodeBorder},
+    breaklines=true,
+    breakatwhitespace=false,
+    showstringspaces=false,
+    keywordstyle=\color{PrimaryBlue}\bfseries,
+    commentstyle=\color{MutedText}\itshape,
+    stringstyle=\color{AccentTeal},
+    numbers=left,
+    numberstyle=\tiny\color{MutedText},
+    numbersep=5pt,
+    xleftmargin=12pt,
+    framexleftmargin=12pt,
+    aboveskip=0pt,
+    belowskip=0pt
+}
+
+\begin{document}
+
+\begin{center}
+    {\LARGE\bfseries\color{PrimaryBlue} BÁO CÁO KỸ THUẬT TỔNG HỢP HỆ THỐNG MÔ PHỎNG HITL DRONE X500}\\[0.4em]
+    {\normalsize\color{MutedText} Trình bày song song: Giải thích kỹ thuật (bên trái) và Trích xuất mã nguồn tương ứng (bên phải)}
+\end{center}
+\vspace{0.5em}
+\hrule
+\vspace{0.5em}
+
+\tableofcontents
+\vspace{1em}
+
+% ==============================================================================
+\part{Môi trường mô phỏng và Cấu hình linh kiện Drone X500}
+% ==============================================================================
+
+% ------------------------------------------------------------------------------
+\section{Môi trường mô phỏng Gazebo Harmonic (\texttt{drone\_world.sdf})}
+% ------------------------------------------------------------------------------
+
+Môi trường mô phỏng được xây dựng trên nền tảng \textbf{Gazebo Harmonic} thông qua tệp cấu hình \path{simulation/worlds/drone_world.sdf}. Đây là nơi định nghĩa đồng hồ vật lý, các điều kiện tự nhiên (trọng lực, từ trường, gió), tọa độ địa lý gốc và các \emph{System Plugin} phục vụ xuất dữ liệu cảm biến.
+
+\subsection{Cấu hình bộ giải vật lý ODE và nhịp mô phỏng}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích cấu hình:}
+\begin{itemize}
+    \item \textbf{Bộ giải vật lý:} Sử dụng engine \texttt{ODE} (Open Dynamics Engine) với bộ giải nhanh \texttt{quick} và \texttt{25} vòng lặp/step (\texttt{sor = 1.3}) để cân bằng giữa độ chính xác và tốc độ thời gian thực.
+    \item \textbf{Tần số vật lý 250 Hz:} \path{max_step_size = 0.004 s} kết hợp \path{real_time_update_rate = 250} tạo ra nhịp đồng hồ gốc $4\text{ ms/step}$ (\path{real_time_factor = 1.0}).
+    \item \textbf{Ý nghĩa với cảm biến:} Mọi \emph{System Plugin} cảm biến đều dựa trên nhịp $250\text{ Hz}$ này để kiểm tra chu kỳ \path{<update_rate>} và phát gói tin lên GZ-Transport.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=SDF, firstnumber=5]
+<physics type="ode">
+  <max_step_size>0.004</max_step_size>
+  <real_time_factor>1.0</real_time_factor>
+  <real_time_update_rate>250</real_time_update_rate>
+  <ode>
+    <solver>
+      <type>quick</type>
+      <iters>25</iters>
+      <sor>1.3</sor>
+    </solver>
+    <constraints>
+      <cfm>0.00001</cfm>
+      <erp>0.2</erp>
+      <contact_max_correcting_vel>100.0</contact_max_correcting_vel>
+      <contact_surface_layer>0.001</contact_surface_layer>
+    </constraints>
+  </ode>
+</physics>
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Điều kiện tự nhiên, tọa độ địa lý gốc và nạp System Plugins}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích cấu hình:}
+\begin{itemize}
+    \item \textbf{Trọng lực \& Khí quyển:} Gia tốc trọng trường $g = 9.8\text{ m/s}^2$ hướng xuống (\texttt{-Z}); mô hình khí quyển \texttt{adiabatic} giúp Barometer tính áp suất theo độ cao chính xác.
+    \item \textbf{Từ trường Trái Đất:} Vector từ trường ENU $(6\times 10^{-6},\, 2.3\times 10^{-5},\, -4.2\times 10^{-5})\text{ T}$ làm chuẩn cho cảm biến la bàn.
+    \item \textbf{Tọa độ GPS gốc:} Chuẩn \texttt{EARTH\_WGS84} hướng \texttt{ENU} tại $(47.397971^\circ,\, 8.546164^\circ,\, 0\text{ m})$ — khớp với gốc \texttt{StateEstimator} trên PC.
+    \item \textbf{4 Plugin cảm biến:} Chỉ khi nạp 4 plugin \texttt{Imu}, \texttt{NavSat}, \texttt{AirPressure}, \texttt{Magnetometer} thì Gazebo mới kích hoạt và publish dữ liệu từ các linh kiện gắn trên drone.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=SDF, firstnumber=23]
+<gravity>0 0 -9.8</gravity>
+<magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+<atmosphere type="adiabatic"/>
+
+<plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+<plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+<plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+<plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+<plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+<plugin filename="gz-sim-air-pressure-system" name="gz::sim::systems::AirPressure"/>
+<plugin filename="gz-sim-magnetometer-system" name="gz::sim::systems::Magnetometer"/>
+...
+<spherical_coordinates>
+  <surface_model>EARTH_WGS84</surface_model>
+  <world_frame_orientation>ENU</world_frame_orientation>
+  <latitude_deg>47.397971057728974</latitude_deg>
+  <longitude_deg>8.546163739800146</longitude_deg>
+  <elevation>0</elevation>
+</spherical_coordinates>
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Mô hình nhiễu gió động thực tế (\texttt{WindEffects}) và vị trí khởi tạo Drone}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích cấu hình:}
+\begin{itemize}
+    \item \textbf{Gió nền cố định:} Thổi liên tục với vận tốc $1.5\text{ m/s}$ theo trục $X$ và $0.5\text{ m/s}$ theo trục $Y$.
+    \item \textbf{Gió giật hình sin (\texttt{WindEffects}):} Biên độ cường độ biến thiên $\pm 30\%$ theo chu kỳ $6.0\text{ s}$ (\texttt{time\_for\_rise = 4.0 s}); hướng gió dao động $\pm 0.3\text{ rad}$ theo chu kỳ $10.0\text{ s}$. Đây là nguồn nhiễu ngoại lực trực tiếp để kiểm chứng khả năng kháng nhiễu của ITSMC và bộ quan sát ESO.
+    \item \textbf{Đặt mẫu Drone:} Nạp mô hình \texttt{model://x500} tại tâm tọa độ $(0, 0, 0.12\text{ m})$ trên mặt đất.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=SDF, firstnumber=38]
+<wind>
+  <linear_velocity>1.5 0.5 0</linear_velocity>
+</wind>
+
+<plugin filename="gz-sim-wind-effects-system" name="gz::sim::systems::WindEffects">
+  <force_approximation_scaling_factor>0.005</force_approximation_scaling_factor>
+  <horizontal>
+    <magnitude>
+      <time_for_rise>4.0</time_for_rise>
+      <sin>
+        <amplitude_percent>0.30</amplitude_percent>
+        <period>6.0</period>
+      </sin>
+    </magnitude>
+    <direction>
+      <time_for_rise>8.0</time_for_rise>
+      <sin>
+        <amplitude>0.3</amplitude>
+        <period>10.0</period>
+      </sin>
+    </direction>
+  </horizontal>
+</plugin>
+...
+<include>
+  <uri>model://x500</uri>
+  <pose>0 0 0.12 0 0 0</pose>
+</include>
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Cấu trúc cơ khí và Hệ thống truyền động Drone X500}
+% ------------------------------------------------------------------------------
+
+Mẫu Quadrotor được kế thừa từ chuẩn \textbf{PX4 X500} gồm 2 tệp: \path{simulation/models/x500_base/model.sdf} (khung thân, quán tính, 4 cánh quạt, 4 cảm biến) và \path{simulation/models/x500/model.sdf} (4 plugin động cơ + plugin odometry).
+
+\subsection{Khung thân chính (\texttt{base\_link}) và thông số quán tính}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích cấu hình:}
+\begin{itemize}
+    \item \textbf{Khối lượng thân:} $m_{\text{body}} = 2.0\text{ kg}$. Cộng thêm $4$ cụm rotor ($4 \times 0.016077\text{ kg}$), tổng khối lượng toàn máy bay là $m = 2.0643\text{ kg}$ (khai báo \texttt{MASS\_KG = 2.064f} trong firmware ESP32).
+    \item \textbf{Ten-xơ quán tính:} Đối xứng trục $X$ và $Y$ với $I_{xx} = I_{yy} = 0.02167\text{ kg}\cdot\text{m}^2$, trục quay Yaw $I_{zz} = 0.040\text{ kg}\cdot\text{m}^2$.
+    \item \textbf{Tương tác gió:} Bật \texttt{<enable\_wind>true</enable\_wind>} để plugin gió tác động lực đẩy ngang lên thân drone.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=SDF, firstnumber=7]
+<link name="base_link">
+  <inertial>
+    <mass>2.0</mass>
+    <inertia>
+      <ixx>0.02166666666666667</ixx>
+      <ixy>0</ixy>
+      <ixz>0</ixz>
+      <iyy>0.02166666666666667</iyy>
+      <iyz>0</iyz>
+      <izz>0.04000000000000001</izz>
+    </inertia>
+  </inertial>
+  <gravity>true</gravity>
+  <enable_wind>true</enable_wind>
+  <velocity_decay />
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Cụm 4 Động cơ không chổi than và Cánh quạt 1345 (\texttt{MulticopterMotorModel})}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích cấu hình:}
+\begin{itemize}
+    \item \textbf{Bố trí hình học chữ X:} 4 động cơ đặt đối xứng ở $(\pm 0.174,\, \pm 0.174,\, 0.06)\text{ m}$ (cánh tay đòn $L = 0.174\text{ m}$). Rotor 0, 1 quay ngược chiều kim đồng hồ (\texttt{ccw}); Rotor 2, 3 quay thuận chiều (\texttt{cw}).
+    \item \textbf{Độ trễ động cơ (Motor Lag):} Hằng số thời gian tăng tốc $\tau_{\text{up}} = 0.0125\text{ s}$, giảm tốc $\tau_{\text{down}} = 0.025\text{ s}$.
+    \item \textbf{Hệ số khí động:} Lực nâng $F = k_F \omega^2$ với $k_F = 8.54858 \times 10^{-6}\text{ N}/(\text{rad/s})^2$; mô-men phản lực $M = k_M F$ với $k_M = 0.016\text{ m}$.
+    \item \textbf{Tốc độ cực đại:} $\omega_{\max} = 1000\text{ rad/s}$ $\Rightarrow$ lực nâng tối đa 4 động cơ là $4 \times k_F \times 1000^2 \approx 34.194\text{ N}$.
+    \item \textbf{Giao tiếp điều khiển:} Nhận lệnh tốc độ \texttt{w0..w3} qua topic \texttt{command/motor\_speed}.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=SDF, firstnumber=341]
+<!-- Trong x500_base/model.sdf -->
+<link name="rotor_0">
+  <pose>0.174 -0.174 0.06 0 0 0</pose>
+  <inertial>
+    <mass>0.016076923076923075</mass>
+    <inertia>
+      <ixx>3.84649e-07</ixx>
+      <iyy>2.61159e-05</iyy>
+      <izz>2.64986e-05</izz>
+    </inertia>
+  </inertial>
+</link>
+\end{lstlisting}
+\vspace{0.4em}
+\begin{lstlisting}[language=SDF, firstnumber=7]
+<!-- Trong x500/model.sdf (lap lai cho motor 0..3) -->
+<plugin filename="gz-sim-multicopter-motor-model-system"
+  name="gz::sim::systems::MulticopterMotorModel">
+  <jointName>rotor_0_joint</jointName>
+  <linkName>rotor_0</linkName>
+  <turningDirection>ccw</turningDirection>
+  <timeConstantUp>0.0125</timeConstantUp>
+  <timeConstantDown>0.025</timeConstantDown>
+  <maxRotVelocity>1000.0</maxRotVelocity>
+  <motorConstant>8.54858e-06</motorConstant>
+  <momentConstant>0.016</momentConstant>
+  <commandSubTopic>command/motor_speed</commandSubTopic>
+  <motorNumber>0</motorNumber>
+  <rotorDragCoefficient>8.06428e-05</rotorDragCoefficient>
+  <rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+  <rotorVelocitySlowdownSim>40</rotorVelocitySlowdownSim>
+  <motorType>velocity</motorType>
+</plugin>
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Các linh kiện cảm biến trên Drone và thông số nhiễu (\texttt{x500\_base/model.sdf})}
+% ------------------------------------------------------------------------------
+
+Trên \texttt{base\_link} của Drone X500 gắn \textbf{4 linh kiện cảm biến riêng biệt}. Tất cả đều đặt \texttt{<always\_on>1</always\_on>} để tự động publish liên tục theo đúng \texttt{<update\_rate>} ngay khi Gazebo chạy.
+
+\subsection{Cảm biến quán tính IMU (\texttt{imu\_sensor} — 250 Hz)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích linh kiện \& thông số:}
+\begin{itemize}
+    \item \textbf{Chức năng:} Tích hợp 2 bộ đo trong 1 linh kiện: \textbf{Con quay hồi chuyển (Gyroscope)} đo vận tốc góc $(g_x, g_y, g_z)$ và \textbf{Gia tốc kế (Accelerometer)} đo gia tốc $(a_x, a_y, a_z)$.
+    \item \textbf{Tần số lấy mẫu:} \texttt{250 Hz} (mỗi $4\text{ ms}$, đồng bộ với step vật lý).
+    \item \textbf{Nhiễu Gaussian Gyro:} \texttt{mean = 0.0}, \texttt{stddev = 0.0035 rad/s} ($\approx 0.2^\circ/\text{s}$) trên cả 3 trục.
+    \item \textbf{Nhiễu Gaussian Accel:} \texttt{mean = 0.0}, \texttt{stddev = 0.035 m/s$^2$} ($\approx 3.5\text{ mg-rms}$) trên cả 3 trục.
+    \item \textbf{Topic GZ-Transport:} \path{/world/default/model/x500/link/base_link/sensor/imu_sensor/imu}.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=SDF, firstnumber=255]
+<sensor name="imu_sensor" type="imu">
+  <gz_frame_id>base_link</gz_frame_id>
+  <always_on>1</always_on>
+  <update_rate>250</update_rate>
+  <imu>
+    <angular_velocity>
+      <x><noise type="gaussian"><mean>0.0</mean><stddev>0.0035</stddev></noise></x>
+      <y><noise type="gaussian"><mean>0.0</mean><stddev>0.0035</stddev></noise></y>
+      <z><noise type="gaussian"><mean>0.0</mean><stddev>0.0035</stddev></noise></z>
+    </angular_velocity>
+    <linear_acceleration>
+      <x><noise type="gaussian"><mean>0.0</mean><stddev>0.035</stddev></noise></x>
+      <y><noise type="gaussian"><mean>0.0</mean><stddev>0.035</stddev></noise></y>
+      <z><noise type="gaussian"><mean>0.0</mean><stddev>0.035</stddev></noise></z>
+    </linear_acceleration>
+  </imu>
+</sensor>
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Cảm biến định vị vệ tinh GPS / NavSat (\texttt{navsat\_sensor} — 30 Hz)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích linh kiện \& thông số:}
+\begin{itemize}
+    \item \textbf{Chức năng:} Đo tọa độ địa lý (\texttt{lat, lon, alt}) và vận tốc 3 trục (\texttt{vel\_E, vel\_N, vel\_U}).
+    \item \textbf{Tần số lấy mẫu:} \texttt{30 Hz} (chu kỳ $\approx 33.3\text{ ms}$).
+    \item \textbf{Nhiễu vị trí ngang:} Trong Gazebo Harmonic, đơn vị \texttt{horizontal} tính theo \textbf{độ}: \texttt{stddev = 4.5e-6 deg} ($\approx 4.5\times 10^{-6} \times 111{,}320 \approx 0.50\text{ m}$).
+    \item \textbf{Nhiễu vị trí đứng:} \texttt{stddev = 0.50 m}.
+    \item \textbf{Nhiễu vận tốc:} Ngang \texttt{0.15 m/s}; đứng \texttt{0.20 m/s}.
+    \item \textbf{Topic GZ-Transport:} \path{/world/default/model/x500/link/base_link/sensor/navsat_sensor/navsat}.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=SDF, firstnumber=304]
+<sensor name="navsat_sensor" type="navsat">
+  <gz_frame_id>base_link</gz_frame_id>
+  <always_on>1</always_on>
+  <update_rate>30</update_rate>
+  <navsat>
+    <position_sensing>
+      <horizontal>
+        <noise type="gaussian"><mean>0.0</mean><stddev>4.5e-6</stddev></noise>
+      </horizontal>
+      <vertical>
+        <noise type="gaussian"><mean>0.0</mean><stddev>0.50</stddev></noise>
+      </vertical>
+    </position_sensing>
+    <velocity_sensing>
+      <horizontal>
+        <noise type="gaussian"><mean>0.0</mean><stddev>0.15</stddev></noise>
+      </horizontal>
+      <vertical>
+        <noise type="gaussian"><mean>0.0</mean><stddev>0.20</stddev></noise>
+      </vertical>
+    </velocity_sensing>
+  </navsat>
+</sensor>
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Cảm biến áp suất Barometer (50 Hz) và La bàn từ trường Magnetometer (100 Hz)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích linh kiện \& thông số:}
+\begin{itemize}
+    \item \textbf{Barometer (\texttt{air\_pressure\_sensor}):} Đo áp suất khí quyển tại \texttt{50 Hz} với nhiễu Gaussian \texttt{stddev = 10.0 Pa} ($\approx 0.85\text{ m}$ độ cao). \texttt{StateEstimator} quy đổi áp suất sang độ cao $Z$ theo công thức chuẩn ICAO sau khi hiệu chuẩn $P_0$ từ 15 mẫu đầu trên mặt đất.
+    \item \textbf{Magnetometer (\texttt{magnetometer\_sensor}):} Là linh kiện tách riêng khỏi IMU, đo vector từ trường 3 trục tại \texttt{100 Hz} với nhiễu \texttt{stddev = 2e-6 T} trên mỗi trục để hiệu chỉnh trôi góc hướng \texttt{Yaw}.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=SDF, firstnumber=219]
+<sensor name="air_pressure_sensor" type="air_pressure">
+  <gz_frame_id>base_link</gz_frame_id>
+  <always_on>1</always_on>
+  <update_rate>50</update_rate>
+  <air_pressure>
+    <pressure>
+      <noise type="gaussian"><mean>0</mean><stddev>10.0</stddev></noise>
+    </pressure>
+  </air_pressure>
+</sensor>
+
+<sensor name="magnetometer_sensor" type="magnetometer">
+  <gz_frame_id>base_link</gz_frame_id>
+  <always_on>1</always_on>
+  <update_rate>100</update_rate>
+  <magnetometer>
+    <x><noise type="gaussian"><stddev>2e-6</stddev></noise></x>
+    <y><noise type="gaussian"><stddev>2e-6</stddev></noise></y>
+    <z><noise type="gaussian"><stddev>2e-6</stddev></noise></z>
+  </magnetometer>
+</sensor>
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Ánh xạ thông số phần cứng sang Firmware ESP32 (\texttt{flight\_config.h})}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích ánh xạ phần cứng:}
+\begin{itemize}
+    \item \textbf{Nhất quán mô hình:} Toàn bộ thông số khối lượng, mô-men quán tính và hệ số động cơ của X500 trong Gazebo đều được khai báo đồng bộ vào namespace \path{FlightConfig::RLCritic} để bộ quan sát nhiễu \textbf{ESO} và \textbf{MotorMixer} trên ESP32 tính toán đúng lực/mô-men vật lý.
+    \item \textbf{Quy đổi thang Mixer:} Lực đẩy tối đa $34.194\text{ N}$, mô-men Roll/Pitch tối đa $4 \times 0.174 \times 8.54858 = 5.950\text{ N}\cdot\text{m}$, mô-men Yaw tối đa $4 \times 0.016 \times 8.54858 = 0.5471\text{ N}\cdot\text{m}$.
+    \item \textbf{Bù trễ cơ cấu chấp hành:} Khai báo \path{ESO_ACT_LAG_ATT_S = 0.035 s} khớp với trễ động cơ ($\tau_{\text{up/down}}$) và truyền thông UART.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=150]
+namespace RLCritic {
+    // Thong so vat ly Quadrotor X500 (khop model.sdf)
+    constexpr float MASS_KG              = 2.064f;
+    constexpr float GRAVITY              = 9.80f;
+    constexpr float JX                   = 0.02167f;
+    constexpr float JY                   = 0.02167f;
+    constexpr float JZ                   = 0.04000f;
+
+    // He so quy doi sang MotorMixer [0..1]
+    constexpr float MAX_TOTAL_THRUST_N   = 34.194f;
+    constexpr float MIXER_ROLL_SCALE_NM  = 5.950f;
+    constexpr float MIXER_PITCH_SCALE_NM = 5.950f;
+    constexpr float MIXER_YAW_SCALE_NM   = 0.5471f;
+
+    // Tre dap ung goc & motor
+    constexpr float ESO_ACT_LAG_POS_S    = 0.10f;
+    constexpr float ESO_ACT_LAG_ATT_S    = 0.035f;
+}
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1.2em}
+\noindent
+\begin{table}[h!]
+\centering
+\caption{Tổng hợp các linh kiện và tham số cấu hình chính trên Drone X500}
+\small
+\begin{tabularx}{\textwidth}{@{}llccX@{}}
+\toprule
+\textbf{Linh kiện} & \textbf{Tệp cấu hình} & \textbf{Tần số} & \textbf{Nhiễu / Giới hạn} & \textbf{Vai trò trong vòng điều khiển} \\
+\midrule
+Khung thân \texttt{base\_link} & \path{x500_base/model.sdf} & -- & $m = 2.0\text{ kg}$ & Chịu lực nâng, trọng lực, gió động \\
+4 Rotor + Motor 5010 & \path{x500/model.sdf} & 250 Hz & $\omega_{\max}=1000\text{ rad/s}$ & Tạo lực nâng ($34.19\text{ N}$) \& mô-men quay \\
+IMU (\texttt{imu\_sensor}) & \path{x500_base/model.sdf} & 250 Hz & Gyro $0.0035$, Acc $0.035$ & Đo tốc độ xoay $(p,q,r)$ \& gia tốc \\
+GPS (\texttt{navsat\_sensor}) & \path{x500_base/model.sdf} & 30 Hz & Ngang $0.50\text{ m}$, Đứng $0.50\text{ m}$ & Đo tọa độ $(lat,lon,alt)$ \& vận tốc \\
+Barometer & \path{x500_base/model.sdf} & 50 Hz & $\sigma = 10.0\text{ Pa}$ ($\approx 0.85\text{ m}$) & Đo áp suất quy đổi độ cao $Z$ \\
+Magnetometer & \path{x500_base/model.sdf} & 100 Hz & $\sigma = 2\times 10^{-6}\text{ T}$ & Đo từ trường bù trôi góc \texttt{Yaw} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\newpage
+
+% ==============================================================================
+\part{Cổng vào/ra, Publish/Subscribe và Xử lý dữ liệu cảm biến}
+% ==============================================================================
+
+% ------------------------------------------------------------------------------
+\section{Tổng quan cổng vào/ra giữa Gazebo, PC Bridge và ESP32}
+% ------------------------------------------------------------------------------
+
+Hệ thống HITL hoạt động theo chu trình khép kín qua 3 tầng giao tiếp:
+\begin{enumerate}[leftmargin=1.5em, itemsep=0.2em]
+    \item \textbf{Gazebo Sim (Publisher):} Các \emph{System Plugin} (\texttt{Imu}, \texttt{NavSat}, \texttt{AirPressure}, \texttt{Magnetometer}) đọc trạng thái vật lý của thân \texttt{base\_link}, cộng nhiễu Gaussian và \textbf{publish} gói tin Protobuf lên mạng \textbf{GZ-Transport} theo tần số riêng của từng cảm biến.
+    \item \textbf{PC Bridge (\path{06_hitl_esp32_bridge.cpp} — Subscriber \& Fusion):} Đăng ký (subscribe) 4 topic cảm biến từ Gazebo, đưa qua bộ gộp \path{StateEstimator} (lọc nhiễu), sau đó đóng gói thành struct nhị phân \path{SensorPacket} (69 bytes) truyền xuống ESP32 qua cổng \textbf{UART Serial 921600 baud} ở \textbf{100 Hz}.
+    \item \textbf{ESP32 $\rightarrow$ PC $\rightarrow$ Gazebo (Actuator Publish):} ESP32 chạy thuật toán điều khiển ở \textbf{200 Hz}, trả về \path{ActuatorPacket} (28 bytes gồm tốc độ 4 motor \texttt{w0..w3}). PC Bridge \textbf{publish} lệnh này lên topic \path{/x500/command/motor_speed} để 4 plugin động cơ quay cánh quạt.
+\end{enumerate}
+
+\subsection{Đăng ký cổng đầu vào cảm biến và cổng đầu ra động cơ trên PC Bridge}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích cổng vào / ra:}
+\begin{itemize}
+    \item \textbf{Khởi tạo gốc tọa độ:} Đặt gốc GPS \path{(47.397971, 8.546164, 0.0)} và vector từ trường chuẩn khớp với \path{drone_world.sdf}.
+    \item \textbf{4 Cổng đầu vào (Subscribe):} \path{gz_node.Subscribe(...)} gắn 4 hàm callback \path{on_imu}, \path{on_gps}, \path{on_baro}, \path{on_mag} vào đúng 4 topic của \path{base_link}. Không đọc topic odometry ground-truth.
+    \item \textbf{Cổng đầu ra động cơ (Advertise/Publish):} \path{motor_pub} phát tốc độ góc $(w_0, w_1, w_2, w_3)$ lên topic \path{/x500/command/motor_speed}.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=685]
+// File: experiments/06_hitl_esp32_bridge.cpp
+g_estimator.set_gps_origin(47.397971057728974, 8.546163739800146, 0.0);
+g_estimator.set_mag_reference(6e-6f, 2.3e-5f, -4.2e-5f);
+
+sub_ok &= gz_node.Subscribe(
+    "/world/default/model/x500/link/base_link/sensor/imu_sensor/imu", on_imu);
+sub_ok &= gz_node.Subscribe(
+    "/world/default/model/x500/link/base_link/sensor/navsat_sensor/navsat", on_gps);
+sub_ok &= gz_node.Subscribe(
+    "/world/default/model/x500/link/base_link/sensor/air_pressure_sensor/air_pressure", on_baro);
+sub_ok &= gz_node.Subscribe(
+    "/world/default/model/x500/link/base_link/sensor/magnetometer_sensor/magnetometer", on_mag);
+
+auto motor_pub = gz_node.Advertise<gz::msgs::Actuators>("/x500/command/motor_speed");
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Chi tiết luồng nhận và xử lý dữ liệu của từng cảm biến (\texttt{StateEstimator})}
+% ------------------------------------------------------------------------------
+
+\subsection{Cảm biến 1: IMU (\texttt{imu\_sensor} — 250 Hz)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Nguồn lấy, đích truyền \& cách xử lý:}
+\begin{itemize}
+    \item \textbf{Đầu vào:} Nhận bản tin \path{gz::msgs::IMU} chứa vận tốc góc Gyro $(g_x, g_y, g_z)$ [rad/s] và gia tốc tuyến tính $(a_x, a_y, a_z)$ [m/s$^2$] trong hệ thân \texttt{base\_link}.
+    \item \textbf{Bước 1 — Tích phân Gyro (250 Hz):} Chuyển $(g_x, g_y, g_z)$ qua động học góc Euler ZYX để dự đoán \texttt{roll\_, pitch\_, yaw\_}.
+    \item \textbf{Bước 2 — Lọc bù với Gia tốc kế:} Tính góc nghiêng từ trọng lực $(a_x, a_y, a_z)$, trộn vào góc Gyro với hệ số $\alpha = 0.0016$ ($0.16\%$) khi bay êm (hoặc $0.0002$ khi tăng tốc mạnh) để khử trôi mà không bị nhiễu.
+    \item \textbf{Bước 3 — Dự đoán Kalman vị trí:} Xoay gia tốc sang hệ World ENU, trừ trọng lực $g = 9.80665\text{ m/s}^2$, rồi chạy \path{kalman_predict_axis} cho 3 trục $X, Y, Z$.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=120]
+// File: src/estimation/state_estimator.cpp (on_imu)
+float d_roll  = gx + gy * sin_phi * tan_theta + gz * cos_phi * tan_theta;
+float d_pitch = gy * cos_phi - gz * sin_phi;
+float d_yaw   = (gy * sin_phi + gz * cos_phi) / cos_theta;
+
+roll_  = wrap_pi(roll_  + d_roll  * dt);
+pitch_ = std::clamp(pitch_ + d_pitch * dt, -1.35f, 1.35f);
+yaw_   = wrap_pi(yaw_   + d_yaw   * dt);
+
+// Complementary Filter voi trong so thich nghi alpha
+float acc_roll  = std::atan2(ay, az);
+float acc_pitch = std::atan2(-ax, std::sqrt(ay * ay + az * az));
+float accel_err = std::abs(acc_norm - GRAVITY);
+float alpha = (accel_err < 0.4f) ? 0.0016f : 0.0002f;
+roll_  = wrap_pi(roll_  + alpha * wrap_pi(acc_roll  - roll_));
+pitch_ = std::clamp(pitch_ + alpha * (acc_pitch - pitch_), -1.35f, 1.35f);
+
+// Xoay gia toc Body -> World ENU & Predict Kalman
+float ax_w = r00 * ax + r01 * ay + r02 * az;
+float ay_w = r10 * ax + r11 * ay + r12 * az;
+float az_w = (r20 * ax + r21 * ay + r22 * az) - GRAVITY;
+kalman_predict_axis(x_, vx_, Px_, ax_w, dt, 0.001f, 0.15f);
+kalman_predict_axis(y_, vy_, Py_, ay_w, dt, 0.001f, 0.15f);
+kalman_predict_axis(z_, vz_, Pz_, az_w, dt, 0.001f, 0.20f);
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Cảm biến 2: GPS / NavSat (\texttt{navsat\_sensor} — 30 Hz)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Nguồn lấy, đích truyền \& cách xử lý:}
+\begin{itemize}
+    \item \textbf{Đầu vào:} Nhận bản tin \path{gz::msgs::NavSat} gồm kinh độ, vĩ độ, độ cao (\texttt{lat, lon, alt}) và vận tốc 3 trục (\texttt{velocity\_east, north, up}).
+    \item \textbf{Bước 1 — Đổi hệ tọa độ phẳng ENU:} Hàm \path{gps_to_enu} quy đổi độ chênh lệch kinh/vĩ độ so với gốc sang mét ($X$: Đông, $Y$: Bắc) theo hệ số $111{,}320\text{ m/deg}$.
+    \item \textbf{Bước 2 — Cập nhật Kalman 2D:} Gọi \path{kalman_update_pos} ($r_{\text{pos}} = 0.04$) và \path{kalman_update_vel} ($r_{\text{vel}} = 0.02$) cho $X, Y$ để kéo dần ước lượng IMU về tọa độ thực và san phẳng nhiễu GPS $\pm 0.50\text{ m}$. Trục $Z$ được hỗ trợ nhẹ với $r_{\text{pos}} = 0.35$.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=228]
+// File: src/estimation/state_estimator.cpp (on_gps)
+float gx_enu = 0.0f, gy_enu = 0.0f;
+gps_to_enu(lat_deg, lon_deg, gx_enu, gy_enu);
+float gz_enu = static_cast<float>(alt_m - origin_alt_);
+
+// EKF Measurement Update tu GPS (30Hz)
+kalman_update_pos(x_, vx_, Px_, gx_enu, 0.04f);
+kalman_update_pos(y_, vy_, Py_, gy_enu, 0.04f);
+kalman_update_vel(x_, vx_, Px_, vel_east,  0.02f);
+kalman_update_vel(y_, vy_, Py_, vel_north, 0.02f);
+
+// Ho tro nhe cho truc do cao Z
+kalman_update_pos(z_, vz_, Pz_, gz_enu, 0.35f);
+kalman_update_vel(z_, vz_, Pz_, vel_up, 0.05f);
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Cảm biến 3 \& 4: Barometer (50 Hz) và Magnetometer (100 Hz)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Nguồn lấy, đích truyền \& cách xử lý:}
+\begin{itemize}
+    \item \textbf{Barometer (\path{gz::msgs::FluidPressure}):} Lấy trung bình 15 mẫu đầu làm áp suất chuẩn mặt đất $P_0$. Sau đó dùng công thức khí áp quốc tế \textbf{ICAO} đổi áp suất (Pa) sang độ cao $Z$ (m) và cập nhật vào Kalman trục $Z$ (\path{r_pos = 0.06}) để lọc nhiễu $\pm 10\text{ Pa}$.
+    \item \textbf{Magnetometer (\path{gz::msgs::Magnetometer}):} Chiếu vector từ trường $(m_x, m_y, m_z)$ về mặt phẳng ngang theo \texttt{roll\_, pitch\_} (bù nghiêng), lấy 20 mẫu đầu làm chuẩn $\text{yaw} = 0$, rồi hiệu chỉnh trôi góc \texttt{yaw\_} nhẹ $1.5\%$ mỗi lần đo.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=268]
+// Barometer -> do cao Z theo cong thuc ICAO
+float alt_baro = 44330.0f * (1.0f - std::pow(pressure_pa / baro_p0_, 1.0f / 5.255f)) + 0.12f;
+kalman_update_pos(z_, vz_, Pz_, alt_baro, 0.06f);
+
+// Magnetometer -> bu nghieng & hieu chinh troi Yaw
+float hx = cp * mx + sp * sr * my + sp * cr * mz;
+float hy = cr * my - sr * mz;
+float yaw_meas = wrap_pi(mag_ref_yaw_ - std::atan2(hy, hx));
+float yaw_err  = std::clamp(wrap_pi(yaw_meas - yaw_), -0.35f, 0.35f);
+yaw_ = wrap_pi(yaw_ + 0.015f * yaw_err);
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Đóng gói truyền xuống ESP32 và Bảng tổng hợp đầu vào/đầu ra}
+% ------------------------------------------------------------------------------
+
+\subsection{Đóng gói \texttt{SensorPacket} (69 bytes) qua UART 921600 baud sang ESP32}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích đóng gói \& truyền nhận:}
+\begin{itemize}
+    \item \textbf{Chuyển hệ vận tốc:} Trong \path{get_state()}, vận tốc ngang $(v_x, v_y)$ được xoay từ World ENU sang hệ thân \texttt{Body (Forward, Left)} để khớp với bộ điều khiển trên ESP32.
+    \item \textbf{Đóng gói nhị phân:} Mỗi $10\text{ ms}$ (100 Hz), PC Bridge đọc trạng thái từ \path{sync_estimated_state()}, gộp cùng lệnh lái (\path{cmd_vx, cmd_vy, cmd_alt_vel, cmd_yaw_rate}) và mã thuật toán (\path{algo_mode}) vào \path{SensorPacket} (69 bytes, kèm checksum XOR) gửi qua Serial xuống ESP32.
+    \item \textbf{Phản hồi ngược:} ESP32 chạy bộ điều khiển ở 200 Hz và gửi trả \path{ActuatorPacket} (28 bytes) chứa 4 tốc độ motor \path{w0..w3} để PC publish lại lên Gazebo.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=33]
+// File: include/comm/telemetry_packet.hpp
+struct SensorPacket {
+    uint8_t header[2];      // 0xAA, 0x55
+    float x, y, z;          // Vi tri World ENU (m)
+    float vx, vy, vz;       // vx,vy: Body; vz: World (m/s)
+    float roll, pitch, yaw; // Goc Euler (rad)
+    float p, q, r;          // Van toc goc Gyro (rad/s)
+    float cmd_vx, cmd_vy, cmd_alt_vel, cmd_yaw_rate;
+    uint8_t flags;          // Co trang thai bay
+    uint8_t algo_mode;      // 0:ITSMC, 1:RL, 2:PID
+    uint8_t checksum;       // Kiem loi XOR
+};
+\end{lstlisting}
+\vspace{0.4em}
+\begin{lstlisting}[language=C++, firstnumber=1370]
+// File: experiments/06_hitl_esp32_bridge.cpp
+send_pkt.x = g_pos_x;     send_pkt.y = g_pos_y;     send_pkt.z = g_pos_z;
+send_pkt.vx = g_vx;       send_pkt.vy = g_vy;       send_pkt.vz = g_vz;
+send_pkt.roll = g_roll;   send_pkt.pitch = g_pitch; send_pkt.yaw = g_yaw;
+send_pkt.p = g_p;         send_pkt.q = g_q;         send_pkt.r = g_r;
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1.2em}
+\noindent
+\begin{table}[h!]
+\centering
+\caption{Tổng hợp cổng vào/ra (Publish/Subscribe) và xử lý dữ liệu của từng cảm biến}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}p{2.3cm}p{4.3cm}cp{3.5cm}X@{}}
+\toprule
+\textbf{Cảm biến} & \textbf{Topic GZ-Transport (Publish $\rightarrow$ Subscribe)} & \textbf{Tần số} & \textbf{Kiểu dữ liệu vào} & \textbf{Cách xử lý \& Đích đầu ra} \\
+\midrule
+\textbf{IMU} (\texttt{imu\_sensor}) & \path{.../sensor/imu_sensor/imu} & 250 Hz & \path{gz::msgs::IMU} ($g_{xyz}, a_{xyz}$) & Tích phân Gyro + lọc bù Accel ($\alpha=0.0016$); Predict Kalman $(x,y,z,v_{xyz})$ $\rightarrow$ \path{SensorPacket} \\
+\textbf{GPS} (\texttt{navsat\_sensor}) & \path{.../sensor/navsat_sensor/navsat} & 30 Hz & \path{gz::msgs::NavSat} ($lat, lon, alt, v_{ENU}$) & Đổi sang mét ENU; Update Kalman $(x,y,v_{xy})$ và hỗ trợ nhẹ $Z$ $\rightarrow$ \path{SensorPacket} \\
+\textbf{Barometer} (\texttt{air\_pressure}) & \path{.../sensor/air_pressure_sensor/air_pressure} & 50 Hz & \path{gz::msgs::FluidPressure} ($P$ [Pa]) & Hiệu chuẩn $P_0$, đổi sang độ cao ICAO; Update Kalman trục $Z$ $\rightarrow$ \path{SensorPacket} \\
+\textbf{Magnetometer} (\texttt{magnetometer}) & \path{.../sensor/magnetometer_sensor/magnetometer} & 100 Hz & \path{gz::msgs::Magnetometer} ($B_{xyz}$ [T]) & Bù nghiêng theo Roll/Pitch; sửa trôi góc \texttt{yaw} ($1.5\%$) $\rightarrow$ \path{SensorPacket} \\
+\textbf{Motor Output} (4 Rotor) & \path{/x500/command/motor_speed} & 100 Hz & \path{gz::msgs::Actuators} ($w_0..w_3$) & PC nhận từ \path{ActuatorPacket} (ESP32) và publish lên Gazebo quay 4 cánh quạt \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\newpage
+
+% ==============================================================================
+\part{Kiến trúc kết nối và giao tiếp chi tiết toàn hệ thống}
+% ==============================================================================
+
+% ------------------------------------------------------------------------------
+\section{Kiến trúc kết nối tổng thể và Kênh Gazebo $\leftrightarrow$ PC Bridge}
+% ==============================================================================
+
+Toàn bộ hệ thống HITL gồm \textbf{5 khối lớn} kết nối xoay quanh trung tâm điều phối là tiến trình C++ \path{06_hitl_esp32_bridge}:
+\begin{enumerate}[leftmargin=1.5em, itemsep=0.2em]
+    \item \textbf{Gazebo Harmonic Sim (Linux/WSL2):} Mô phỏng vật lý 250 Hz, gió động, 4 cảm biến và 4 động cơ.
+    \item \textbf{PC HITL Bridge (\path{06_hitl_esp32_bridge}):} Gồm các module con: \path{StateEstimator} (gộp cảm biến), \path{WaypointNavigator} (dẫn đường tự động), \path{MavlinkBridge} (giao tiếp QGC), \path{TrajectoryLogger} (ghi log CSV) và bộ đệm UART/UDP.
+    \item \textbf{Vi điều khiển ESP32 (\path{firmware_esp32.ino}):} Chạy vòng lặp điều khiển \textbf{200 Hz} (ITSMC / RL Critic+ESO / PID) và \path{MotorMixer}.
+    \item \textbf{QGroundControl (QGC):} Trạm mặt đất hiển thị bản đồ, HUD và nạp Mission/Guided qua MAVLink UDP.
+    \item \textbf{Web Oscilloscope \& Tay cầm Xbox 360:} Giám sát đồ thị sóng thời gian thực trên trình duyệt (port 8088) và nhận tay cầm từ Windows (\path{XboxBridge.exe}).
+\end{enumerate}
+
+\subsection{Giao tiếp PC Bridge $\leftrightarrow$ Gazebo Sim qua GZ-Transport (IPC)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích kết nối \& tần số:}
+\begin{itemize}
+    \item \textbf{Giao thức:} GZ-Transport (Publish/Subscribe qua bộ nhớ chia sẻ/UDP nội bộ Linux, chuẩn tuần tự hóa Protobuf).
+    \item \textbf{Chiều Gazebo $\rightarrow$ PC:} 4 plugin cảm biến đẩy dữ liệu theo tần số riêng: IMU (\texttt{250 Hz}), Magnetometer (\texttt{100 Hz}), Barometer (\texttt{50 Hz}), GPS (\texttt{30 Hz}). *(Nếu bật cờ \path{--world-odom}, PC chuyển sang subscribe \path{/model/x500/odometry} ở \texttt{100 Hz}).*
+    \item \textbf{Chiều PC $\rightarrow$ Gazebo:} Vòng lặp chính trên PC chạy ở \textbf{100 Hz} (\path{sleep_for(10ms)}), xuất lệnh tốc độ 4 rotor \path{w0..w3} (rad/s) lên topic \path{/x500/command/motor_speed}.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=1950]
+// File: experiments/06_hitl_esp32_bridge.cpp
+// Vong lap chinh PC Bridge chay o 100Hz (chu ky 10ms)
+gz::msgs::Actuators act_msg;
+act_msg.add_velocity(last_motor_w0);
+act_msg.add_velocity(last_motor_w1);
+act_msg.add_velocity(last_motor_w2);
+act_msg.add_velocity(last_motor_w3);
+motor_pub.Publish(act_msg);
+motor_pub_alt.Publish(act_msg);
+...
+// Tan so gui 100Hz (10ms)
+std::this_thread::sleep_for(std::chrono::milliseconds(10));
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Giao tiếp PC Bridge $\leftrightarrow$ Vi điều khiển ESP32 (UART Serial)}
+% ==============================================================================
+
+\subsection{Cấu hình cổng UART 921600 baud trên PC (POSIX) và ESP32}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích cấu hình cổng Serial:}
+\begin{itemize}
+    \item \textbf{Đường truyền vật lý:} Cáp USB-UART (\path{/dev/ttyUSB0} hoặc \path{/dev/ttyACM0} trong WSL2 qua \texttt{usbipd-win}).
+    \item \textbf{Tốc độ baud:} \texttt{921600 bps}, chuẩn khung \textbf{8N1} (8 bit dữ liệu, không parity, 1 bit stop), tắt điều khiển luồng phần cứng/phần mềm (\texttt{CRTSCTS}, \texttt{IXON/IXOFF}) và bật chế độ \texttt{Raw} (\texttt{O\_NONBLOCK}) để độ trễ truyền gói tin xuống mức $\sim 0.75\text{ ms/gói}$.
+    \item \textbf{Đồng bộ phía ESP32:} Khởi tạo \path{Serial.begin(UART_BAUD_RATE)} với \path{UART_BAUD_RATE = 921600} trong \path{flight_config.h}.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=123]
+// File: experiments/06_hitl_esp32_bridge.cpp
+int open_serial_port(const std::string& port_name, int baud_rate = B921600) {
+    int fd = open(port_name.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+    struct termios tty;
+    tcgetattr(fd, &tty);
+    cfsetospeed(&tty, baud_rate);
+    cfsetispeed(&tty, baud_rate);
+    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8; // 8-bit
+    tty.c_cflag &= ~(PARENB | CSTOPB | CRTSCTS); // 8N1, no flow ctrl
+    tty.c_lflag = 0; tty.c_oflag = 0;
+    tty.c_cc[VMIN] = 0; tty.c_cc[VTIME] = 0;
+    tcsetattr(fd, TCSANOW, &tty);
+    return fd;
+}
+\end{lstlisting}
+\vspace{0.4em}
+\begin{lstlisting}[language=C++, firstnumber=820]
+// File: firmware_esp32/firmware_esp32.ino & flight_config.h
+constexpr uint32_t UART_BAUD_RATE = 921600;
+Serial.begin(Hardware::UART_BAUD_RATE);
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Chu kỳ truyền nhận bất đối xứng (PC 100 Hz $\leftrightarrow$ ESP32 200 Hz) \& Kiểm lỗi}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích cơ chế truyền nhận:}
+\begin{itemize}
+    \item \textbf{PC $\rightarrow$ ESP32 (100 Hz):} Mỗi $10\text{ ms}$, PC gửi \path{SensorPacket} (69 bytes, header \texttt{0xAA 0x55}, checksum XOR).
+    \item \textbf{Vòng lặp ESP32 (200 Hz):} ESP32 chạy chu kỳ cố định \path{CONTROL_LOOP_HZ = 200.0f} (\path{DT = 0.005 s} = $5\text{ ms}$). Nếu chưa có gói mới từ PC ở tick lẻ, ESP32 giữ nguyên trạng thái mới nhất (ZOH) để tính lại bộ điều khiển và cập nhật \path{MotorMixer} (kèm giới hạn gia tốc motor \texttt{apply\_slew\_rate}).
+    \item \textbf{ESP32 $\rightarrow$ PC:} Sau khi tính xong, ESP32 gửi trả \path{ActuatorPacket} (28 bytes, header \texttt{0x55 0xAA}, chứa \texttt{w0..w3}, góc đặt và \texttt{status\_flags}) kèm checksum XOR.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=42]
+// File: firmware_esp32/flight_config.h
+namespace Timing {
+    constexpr float CONTROL_LOOP_HZ = 200.0f;
+    constexpr float DT = 1.0f / CONTROL_LOOP_HZ; // 0.005s (5ms)
+}
+\end{lstlisting}
+\vspace{0.4em}
+\begin{lstlisting}[language=C++, firstnumber=65]
+// File: include/comm/telemetry_packet.hpp
+struct ActuatorPacket {
+    uint8_t header[2];         // 0x55, 0xAA
+    float w0, w1, w2, w3;      // Toc do 4 rotor (rad/s)
+    float target_pitch_deg;    // Goc dat Pitch (deg)
+    float target_roll_deg;     // Goc dat Roll (deg)
+    uint8_t status_flags;      // Bit 0:Armed, Bit 4-5:Algo
+    uint8_t checksum;          // XOR byte 0..26
+};
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Giao tiếp PC Bridge $\leftrightarrow$ QGroundControl (MAVLink UDP)}
+% ==============================================================================
+
+\subsection{Cấu hình Socket UDP 14550/14540 và luồng Telemetry đa tần số}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích kết nối MAVLink:}
+\begin{itemize}
+    \item \textbf{Cổng mạng:} Lớp \path{MavlinkBridge} mở socket UDP non-blocking bind cổng nội bộ \path{local_port = 14540} để nhận lệnh từ QGC, và tự động phát tới \path{qgc_port = 14550} trên cả \path{127.0.0.1} (Linux) lẫn IP Gateway của Windows (\path{detect_wsl_host_ip()}).
+    \item \textbf{Luồng nền 50 Hz (\path{thread_worker}):} Chạy riêng biệt trên 1 thread với chu kỳ $20\text{ ms}$ và phân chia thành 3 tầng tần số để không nghẽn băng thông:
+    \begin{itemize}
+        \item \textbf{50 Hz ($20\text{ ms}$):} \path{ATTITUDE}, \path{LOCAL_POSITION_NED}.
+        \item \textbf{10 Hz ($100\text{ ms}$):} \path{GLOBAL_POSITION_INT}, \path{GPS_RAW_INT}, \path{VFR_HUD}, \path{EXTENDED_SYS_STATE}.
+        \item \textbf{1 Hz ($1000\text{ ms}$):} \path{HEARTBEAT}, \path{SYS_STATUS}, \path{HOME_POSITION}, \path{MISSION_CURRENT}.
+    \end{itemize}
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=1108]
+// File: src/comm/mavlink_bridge.cpp (thread_worker)
+while (running_) {
+    // 1. Goi tin toc do cao (50Hz - moi 20ms)
+    send_attitude();
+    send_local_position_ned();
+
+    // 2. Goi tin toc do trung binh (10Hz - moi 100ms)
+    if (loop_count % 5 == 0) {
+        send_global_position_int();
+        send_gps_raw_int();
+        send_vfr_hud();
+        send_extended_sys_state();
+    }
+
+    // 3. Goi tin toc do thap (1Hz - moi 1000ms)
+    if (loop_count % 50 == 0) {
+        send_heartbeat();
+        send_sys_status();
+        send_home_position();
+        if (navigator_ && navigator_->is_auto_active())
+            send_mission_current(navigator_->get_current_seq());
+    }
+    process_incoming_packets();
+    ++loop_count;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Nhận lệnh Mission / Guided từ QGC vào \texttt{WaypointNavigator}}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích chiều QGC $\rightarrow$ PC:}
+\begin{itemize}
+    \item \textbf{Cơ chế:} Hàm \path{process_incoming_packets()} đọc gói MAVLink từ cổng UDP \texttt{14540} ở tần số \textbf{50 Hz}.
+    \item \textbf{Các lệnh hỗ trợ:}
+    \begin{itemize}
+        \item \path{COMMAND_LONG}: ARM/DISARM, Takeoff, Land, đổi chế độ bay.
+        \item \path{MISSION_COUNT} / \path{MISSION_ITEM_INT}: Nạp danh sách Waypoint từ QGC vào \path{WaypointNavigator}.
+        \item \path{SET_GPS_GLOBAL_ORIGIN} / Guided: Chế độ \emph{Click \& Fly} bay tới điểm bấm trên bản đồ QGC.
+    \end{itemize}
+    \item \textbf{Chế độ an toàn:} Chỉ cho phép tự động lái khi chạy kèm cờ \path{--auto} (\path{auto_allowed_ = true}).
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=1085]
+// File: src/comm/mavlink_bridge.cpp (Click & Fly / Mission)
+case MAVLINK_MSG_ID_SET_GPS_GLOBAL_ORIGIN: {
+    mavlink_set_gps_global_origin_t orig;
+    mavlink_msg_set_gps_global_origin_decode(&msg, &orig);
+    if (auto_allowed_.load() && navigator_) {
+        if (arm_callback_) arm_callback_(true);
+        double lat = static_cast<double>(orig.latitude) / 1e7;
+        double lon = static_cast<double>(orig.longitude) / 1e7;
+        float cur_alt = std::clamp(state_->altitude.load(), 3.5f, 9.5f);
+        float gx, gy, gz;
+        navigator_->gps_to_local(lat, lon, cur_alt, gx, gy, gz);
+        navigator_->start_guided_reposition(gx, gy, gz, -1.0f);
+        send_statustext("Guided: Flying to clicked location", 6);
+    }
+    break;
+}
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Giao tiếp với Web Oscilloscope, Tay cầm Xbox 360 và Bảng tổng hợp}
+% ==============================================================================
+
+\subsection{PC Bridge $\rightarrow$ Web Oscilloscope (UDP 9098 $\rightarrow$ HTTP/SSE 8088)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích luồng dữ liệu Web:}
+\begin{itemize}
+    \item \textbf{PC Bridge $\rightarrow$ Server Python:} Cứ mỗi $20\text{ ms}$ (\textbf{50 Hz}), PC Bridge đóng gói chuỗi JSON (chứa góc Roll/Pitch/Yaw, góc đặt ESP32, độ cao, vận tốc, tốc độ 4 motor, tên thuật toán, số gói Tx/Rx) gửi qua \textbf{UDP} tới \path{127.0.0.1:9098}.
+    \item \textbf{Server Python $\rightarrow$ Trình duyệt:} File \path{tools/web_oscilloscope/server.py} lắng nghe UDP cổng \texttt{9098}, lưu vào bộ đệm trượt \path{MAX_HISTORY = 1500} mẫu và đẩy trực tiếp lên giao diện web (\path{http://localhost:8088}) qua giao thức \textbf{SSE (Server-Sent Events)} ở \textbf{50 Hz}.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=1908]
+// File: experiments/06_hitl_esp32_bridge.cpp (50Hz = 20ms)
+if (osc_sock >= 0 && std::chrono::duration<double>(
+        now - last_osc_broadcast_time).count() >= 0.020) {
+    last_osc_broadcast_time = now;
+    snprintf(json_buf, sizeof(json_buf),
+        "{\"t\":%.3f,\"r\":%.2f,\"p\":%.2f,\"y\":%.2f,"
+        "\"tr\":%.2f,\"tp\":%.2f,\"z\":%.3f,\"w\":[%.1f,%.1f,%.1f,%.1f],"
+        "\"algo\":\"%s\",\"tx\":%u,\"rx\":%u}", ...);
+    sendto(osc_sock, json_buf, n, 0, (sockaddr*)&osc_addr, sizeof(osc_addr));
+}
+\end{lstlisting}
+\vspace{0.4em}
+\begin{lstlisting}[language=Python, firstnumber=19]
+# File: tools/web_oscilloscope/server.py
+HOST = '0.0.0.0'
+DEFAULT_PORT = 8088   # HTTP & SSE cho trinh duyet
+UDP_PORT = 9098       # Nhan JSON tu C++ Bridge
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1em}
+
+\subsection{Tay cầm Xbox 360 (\texttt{XboxBridge.exe} trên Windows) $\rightarrow$ PC Bridge (UDP 9099)}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Giải thích kết nối tay cầm:}
+\begin{itemize}
+    \item \textbf{Cầu nối Windows $\rightarrow$ WSL2:} Vì WSL2 không đọc trực tiếp API XInput của tay cầm trên Windows, launcher chạy \path{XboxBridge.exe} phía Windows để đọc cần gạt/nút bấm và bắn gói nhị phân \path{XboxUdpPacket} (17 bytes, magic \texttt{0x58424F58}) qua \textbf{UDP cổng 9099} vào IP của WSL2.
+    \item \textbf{An toàn mất kết nối:} PC Bridge đọc non-blocking mỗi chu kỳ $10\text{ ms}$ (100 Hz); nếu quá \textbf{500 ms} không có gói mới thì tự kích hoạt timeout chuyển về trạng thái an toàn.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=50]
+// File: experiments/06_hitl_esp32_bridge.cpp
+#pragma pack(push, 1)
+struct XboxUdpPacket {
+    uint32_t magic;          // 0x58424F58 ('XBOX')
+    uint16_t buttons;        // Bitmask nut bam
+    uint8_t left_trigger, right_trigger;
+    int16_t thumb_lx, thumb_ly, thumb_rx, thumb_ry;
+    uint8_t is_connected;
+};
+#pragma pack(pop)
+int udp_sock = create_udp_receiver_socket(9099);
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1.2em}
+\noindent
+\begin{table}[h!]
+\centering
+\caption{Bảng tổng hợp toàn bộ cổng giao tiếp, giao thức và tần số trong hệ thống HITL}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}p{3.1cm}p{2.9cm}p{2.4cm}cp{4.4cm}@{}}
+\toprule
+\textbf{Kênh kết nối} & \textbf{Cổng / Địa chỉ} & \textbf{Giao thức} & \textbf{Tần số} & \textbf{Dữ liệu \& Tệp cấu hình} \\
+\midrule
+Gazebo $\rightarrow$ PC Bridge & 4 Sensor Topics & GZ-Transport (Protobuf) & 250 / 100 / 50 / 30 Hz & IMU, Mag, Baro, GPS thô (\path{drone_world.sdf}, \path{model.sdf}) \\
+PC Bridge $\rightarrow$ Gazebo & \path{/x500/command/motor_speed} & GZ-Transport (Protobuf) & 100 Hz & Tốc độ 4 rotor \texttt{w0..w3} (\path{06_hitl_esp32_bridge.cpp}) \\
+PC Bridge $\leftrightarrow$ ESP32 & \path{/dev/ttyUSB*} / \path{ttyACM*} & UART 921600 8N1 (Binary) & PC 100 Hz / ESP 200 Hz & \path{SensorPacket} (69B) $\leftrightarrow$ \path{ActuatorPacket} (28B) (\path{telemetry_packet.hpp}) \\
+PC Bridge $\leftrightarrow$ QGC & UDP \texttt{14550} (TX) / \texttt{14540} (RX) & MAVLink v2 (UDP) & 50 / 10 / 1 Hz & Attitude, GPS, Heartbeat, Mission, Guided (\path{mavlink_bridge.cpp}) \\
+PC Bridge $\rightarrow$ Web Server & UDP \path{127.0.0.1:9098} & UDP JSON & 50 Hz & Telemetry JSON 15 thông số (\path{06_hitl_esp32_bridge.cpp}) \\
+Web Server $\rightarrow$ Browser & TCP \path{0.0.0.0:8088} & HTTP + SSE & 50 Hz & Giao diện đồ thị sóng real-time (\path{server.py}) \\
+Xbox Windows $\rightarrow$ PC Bridge & UDP \texttt{9099} & Binary UDP (17B) & $\sim$100 Hz (timeout 500ms) & \path{XboxUdpPacket} (\path{XboxBridge.exe}, \path{06_hitl_esp32_bridge.cpp}) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\newpage
+
+% ==============================================================================
+\part{Phân tích chi tiết các thuật toán điều khiển trên ESP32}
+% ==============================================================================
+
+% ------------------------------------------------------------------------------
+\section{Thuật toán 1: Điều khiển trượt tích phân đầu cuối (ITSMC)}
+% ------------------------------------------------------------------------------
+
+\subsection{Ý tưởng thuật toán (giải thích đơn giản, trực quan)}
+Hãy tưởng tượng bạn muốn giữ một quả bóng nằm đúng tâm đĩa dù có gió thổi ngang:
+\begin{itemize}
+    \item \textbf{Ý tưởng cốt lõi:} Thay vì chỉ đẩy nhẹ tỉ lệ theo độ lệch như PID, ITSMC vẽ sẵn một \textbf{``đường ray lý tưởng''} gọi là \textbf{mặt trượt ($s = 0$)} nối thẳng từ vị trí hiện tại về tâm đích.
+    \item \textbf{Cách hoạt động gồm 2 bước:}
+    \begin{enumerate}[leftmargin=1.4em, itemsep=0.2em]
+        \item \textbf{Ép quay lại đường ray ($u_{\text{sw}}$):} Hễ gió thổi làm drone văng ra khỏi đường ray ($s \neq 0$), bộ điều khiển dùng một lực chuyển mạch mạnh ($k_2 s + k_3 \tanh(s/\phi_b)$) \textbf{đẩy cưỡng bức} drone quay về đường ray bất chấp nhiễu gió.
+        \item \textbf{Trượt nhanh về đích ($u_{\text{eq}}$):} Khi đã nằm trên đường ray ($s = 0$), thành phần căn bậc hai $|e|^{0.5}\text{sign}(e)$ tạo lực kéo lớn hơn tuyến tính khi sai số nhỏ, giúp sai số $e \to 0$ trong \textbf{thời gian hữu hạn} (khác với PID chỉ tiệm cận theo hàm mũ).
+    \end{enumerate}
+    \item \textbf{Phạm vi áp dụng trên ESP32:} ITSMC điều khiển vòng độ cao $Z$ (\path{g_itsmc_alt}) và 3 trục góc thái độ Roll, Pitch, Yaw (\path{g_itsmc_roll}, \path{g_itsmc_pitch}, \path{g_itsmc_yaw}); còn vòng vị trí ngang $X, Y$ dùng chung \path{PositionController}.
+\end{itemize}
+
+\subsection{Phân tích toán học chi tiết và Minh chứng bằng mã nguồn (\texttt{itsmc\_controller.hpp})}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Công thức toán học ITSMC:}
+\begin{enumerate}[leftmargin=1.3em, itemsep=0.25em]
+    \item \textbf{Sai số và đạo hàm:} $e = x_d - x$, $\dot{e} \approx -\dot{x}$ (với góc đặt biến thiên chậm).
+    \item \textbf{Hàm phi tuyến chống kỳ dị ($\alpha = 0.5$):}
+    \[
+    f(e) = \begin{cases}
+        \dfrac{e}{\sqrt{\varepsilon_{\text{lin}}}} & \text{nếu } |e| < \varepsilon_{\text{lin}} \\[6pt]
+        |e|^\alpha \operatorname{sign}(e) & \text{nếu } |e| \ge \varepsilon_{\text{lin}}
+    \end{cases}
+    \]
+    Vùng tuyến tính $\varepsilon_{\text{lin}}$ triệt tiêu hiện tượng đạo hàm $\frac{d}{de}\sqrt{|e|} \to \infty$ khi $e \to 0$ (nguyên nhân gây dao động tự kích 4 Hz).
+    \item \textbf{Mặt trượt tích phân đầu cuối:}
+    \[
+    s = \dot{e} + k_{11} e + k_{12} \int_0^t f(e)\,d\tau
+    \]
+    (tích phân được kẹp trong $[-\text{max\_integral},\, +\text{max\_integral}]$ để chống bão hòa \emph{anti-windup}).
+    \item \textbf{Luật điều khiển tương đương \& chuyển mạch trơn:}
+    \[
+    u_{\text{eq}} = k_{11}\dot{e} + k_{12} f(e), \quad u_{\text{sw}} = k_2 s + k_3 \tanh\!\left(\frac{s}{\phi_b}\right)
+    \]
+    Hàm $\tanh(s/\phi_b)$ với độ dày lớp biên $\phi_b$ thay cho $\operatorname{sign}(s)$ nhằm triệt tiêu rung chấn vi phân (\emph{chattering}).
+    \item \textbf{Tín hiệu ngõ ra chuẩn hóa:}
+    \[
+    u = \operatorname{clamp}\!\big(b_{\text{inv}}(u_{\text{eq}} + u_{\text{sw}}),\, -u_{\max},\, u_{\max}\big)
+    \]
+\end{enumerate}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=91]
+// File: firmware_esp32/itsmc_controller.hpp
+float update_error(float error, float current_rate, float dt) {
+    float de = -current_rate;
+    float abs_e = std::abs(error);
+    float frac_e = 0.0f;
+    if (abs_e > 1e-6f) {
+        if (cfg_.eps_lin > 1e-4f && abs_e < cfg_.eps_lin) {
+            frac_e = error / std::sqrt(cfg_.eps_lin);
+        } else {
+            frac_e = std::sqrt(abs_e) * ((error > 0.0f) ? 1.0f : -1.0f);
+        }
+    }
+
+    // Tich luy tich phan mat truot + Anti-Windup
+    integral_sign_ = std::clamp(integral_sign_ + frac_e * dt,
+                                -cfg_.max_integral, cfg_.max_integral);
+
+    // Mat truot s & Luat dieu khien u_eq + u_sw
+    float s    = de + cfg_.k11 * error + cfg_.k12 * integral_sign_;
+    float u_eq = cfg_.k11 * de + cfg_.k12 * frac_e;
+    float u_sw = cfg_.k2 * s + cfg_.k3 * std::tanh(s / cfg_.phi_b);
+
+    float u = cfg_.b_inv * (u_eq + u_sw);
+    return std::clamp(u, -cfg_.max_output, cfg_.max_output);
+}
+\end{lstlisting}
+\vspace{0.4em}
+\begin{lstlisting}[language=C++, firstnumber=163]
+// Bo dieu khien do cao ITSMC
+float compute_thrust(float target_alt, float current_alt, float vz, float dt) {
+    float delta_thrust = itsmc_.update(target_alt, current_alt, vz, dt);
+    return std::clamp(hover_thrust_ + delta_thrust, min_thrust_, max_thrust_);
+}
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Thuật toán 2: Học tăng cường Critic-Only Online kết hợp ESO}
+% ------------------------------------------------------------------------------
+
+\subsection{Ý tưởng thuật toán (giải thích đơn giản, trực quan)}
+Khác với RL cổ điển (như DQN/PPO phải bay sai hàng nghìn lần rồi mới học được), thuật toán \textbf{Online HJB Critic-Only + ESO} chạy thời gian thực ở \textbf{200 Hz} ($5\text{ ms/lần}$) ngay trên ESP32 nhờ sự phối hợp của 2 khối:
+\begin{itemize}
+    \item \textbf{Khối 1 — ESO bậc 3 (``Người đo gió và bù trừ tức thời''):} Thay vì dùng lực cưỡng bức đè gió như ITSMC, ESO chứa sẵn mô hình vật lý của X500 ($m = 2.064\text{ kg}$, mô-men quán tính $J$, có tính cả trễ motor). Cứ mỗi $5\text{ ms}$, ESO so sánh \emph{``theo lý thuyết drone phải ở đâu''} với \emph{``cảm biến đo được drone đang ở đâu''}. Độ lệch đó chính là \textbf{gió và sai lệch phần cứng}, ESO quy ra gia tốc/mô-men nhiễu rồi \textbf{trừ thẳng} vào lệnh điều khiển ở chu kỳ kế tiếp.
+    \item \textbf{Khối 2 — RL Critic-Only (``Người tự nắn trọng số tối ưu''):} Khi ESO đã triệt tiêu phần lớn gió, mạng Critic chỉ cần tinh chỉnh độ nhạy của bộ điều khiển:
+    \begin{enumerate}[leftmargin=1.4em, itemsep=0.2em]
+        \item \textbf{Không học mù từ số 0:} Trọng số \texttt{wp\_} (vị trí) và \texttt{we\_} (góc) được khởi tạo sẵn tại \textbf{$\sim 92\%$ nghiệm tối ưu Riccati} (\texttt{kWpInit}, \texttt{kWeInit}), nên ngay giây đầu cất cánh drone đã bay vững.
+        \item \textbf{Tự chấm điểm sau mỗi 5 ms:} Tính \textbf{sai số Bellman $e_B$} xem tổng chi phí vừa trả $(z^T Q z + u_2^T R u_2)$ có khớp với dự đoán $\dot{V}(z)$ của Critic không. Nếu chưa khớp ($e_B \neq 0$), thuật toán tự xoay nhẹ 9 trọng số $W$ tiến về nghiệm tối ưu thực tế $W^*$.
+    \end{enumerate}
+\end{itemize}
+
+\subsection{Mạng Critic, Chính sách điều khiển tối ưu và Bước học RL tách trục}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Công thức toán học RL Critic-Only:}
+\begin{enumerate}[leftmargin=1.3em, itemsep=0.25em]
+    \item \textbf{Vector trạng thái sai số ($6\times 1$):}
+    \[
+    z = [e_0,\, e_1,\, e_2,\, \dot{e}_0,\, \dot{e}_1,\, \dot{e}_2]^T
+    \]
+    với $z_p = [p - p_d;\, \dot{p} - \dot{p}_d]$ (vị trí) và $z_\eta = [\eta - \eta_d;\, \omega]$ (góc thái độ).
+    \item \textbf{Hàm giá trị HJB Critic ($9$ hàm cơ sở bậc 2):}
+    \[
+    V(z) = W^T \sigma(z), \quad \sigma(z) = [e_0^2, e_1^2, e_2^2, \dot{e}_0^2, \dot{e}_1^2, \dot{e}_2^2, e_0\dot{e}_0, e_1\dot{e}_1, e_2\dot{e}_2]^T
+    \]
+    \item \textbf{Chính sách tối ưu (suy trực tiếp, không cần Actor):}
+    \[
+    u_2 = -\frac{1}{2} R^{-1} G^T \nabla\sigma(z)^T W
+    \]
+    Triển khai cho từng trục $i \in \{0,1,2\}$ (với hệ số quán tính $M_i = m$ hoặc $J_i$):
+    \[
+    u_{2,i} = -\frac{1}{2 R_i M_i}\big(2 W_{i+3}\dot{e}_i + W_{i+6} e_i\big)
+    \]
+    \item \textbf{Sai số Bellman tách trục (\emph{Per-Axis}):}
+    \[
+    e_{B,i} = \underbrace{W_i^T \gamma_i}_{\dot{V}_i} + \underbrace{q_i e_i^2 + q_{i+3}\dot{e}_i^2 + r_i u_{2,i}^2}_{r_i(z_i, u_{2,i})}
+    \]
+    \item \textbf{Luật cập nhật trọng số RL + ổn định Lyapunov:}
+    \[
+    \dot{W}_i = -k_1 \frac{\gamma_i e_{B,i}}{(1 + 0.25\|\gamma_i\|^2)^2} + k_2 l_i \varphi_i W_i
+    \]
+    trong đó $l_i = 0$ nếu $\dot{V}_i < 0$ (đang ổn định) và $l_i = 1$ nếu $\dot{V}_i \ge 0$ (kích hoạt số hạng Lyapunov kéo về vùng ổn định).
+\end{enumerate}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=333]
+// File: firmware_esp32/rl_critic_controller.hpp
+// 1. Chinh sach toi uu tu Critic: up2 = -0.5 * Rp^-1 * Gp^T * grad^T * Wp
+for (int i = 0; i < 3; ++i) {
+    float dV_dvei = 2.0f * wp_[i + 3] * dep[i] + wp_[i + 6] * ep[i];
+    up2[i] = -0.5f / (rp[i] * m) * dV_dvei;
+}
+
+// 2. Tong hop luc day bu trong luc & bu nhieu ESO
+float up[3] = {
+    up2[0] - m * dis_p_hat_[0],
+    up2[1] - m * dis_p_hat_[1],
+    m * g + up2[2] - m * dis_p_hat_[2]
+};
+
+// 3. Buoc hoc RL tach truc (Per-Axis Decoupled Bellman Update)
+for (int i = 0; i < 3; ++i) {
+    ...
+    float r_cost_i = qp[i]*zp[i]*zp[i] + qp[i+3]*zp[i+3]*zp[i+3] + rp[i]*up2[i]*up2[i];
+    float eB_i = vdot_i + r_cost_i;
+    float l_i  = (vdot_i < 0.0f) ? 0.0f : 1.0f;
+    float denom_i = 1.0f + 0.25f * gamma_norm2_i;
+    denom_i = denom_i * denom_i;
+    for (int a = 0; a < 3; ++a) {
+        int j = idxs[a];
+        float dWp = -RLCritic::KP1_LEARN * gamma_i[a] * eB_i / denom_i
+                    + RLCritic::KP2_STAB * l_i * varphi_i[a];
+        wp_[j] = DroneMath::clamp(wp_[j] + dWp * dt,
+                                  0.65f * wp_init_[j], 1.60f * wp_init_[j]);
+    }
+}
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+\subsection{Bộ quan sát trạng thái mở rộng ESO bậc 3 có bù trễ cơ cấu chấp hành}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Công thức toán học ESO bậc 3:}
+\begin{enumerate}[leftmargin=1.3em, itemsep=0.25em]
+    \item \textbf{Mô hình hóa độ trễ thực tế (HITL Lag):} Lực/mô-men sau bão hòa $u_{\text{applied}}$ được đưa qua bộ lọc bậc 1 mô phỏng trễ góc nghiêng ($\tau_{\text{pos}} = 0.10\text{ s}$) và trễ motor/UART ($\tau_{\text{att}} = 0.035\text{ s}$):
+    \[
+    u_{\text{eff}}(k) = u_{\text{eff}}(k-1) + \min\!\left(1, \frac{dt}{\tau}\right)\big(u_{\text{applied}} - u_{\text{eff}}(k-1)\big)
+    \]
+    \item \textbf{Phương trình quan sát bậc 3:} Đặt sai số quan sát $\tilde{x} = \hat{x} - x$, với đa thức đặc trưng cực $(s + 1/\varepsilon)(s + 2/\varepsilon)(s + 3/\varepsilon) \Rightarrow c_1=6,\, c_2=11,\, c_3=6$:
+    \[
+    \begin{cases}
+        \dot{\hat{x}}_i = \hat{v}_i - \dfrac{c_1}{\varepsilon}(\hat{x}_i - x_i) \\[6pt]
+        \dot{\hat{v}}_i = f_i + \dfrac{u_{\text{eff},i}}{M_i} - \dfrac{c_2}{\varepsilon^2}(\hat{x}_i - x_i) + \hat{d}_i \\[6pt]
+        \dot{\hat{d}}_i = -\dfrac{c_3}{\varepsilon^3}(\hat{x}_i - x_i)
+    \end{cases}
+    \]
+    trong đó $\hat{d}_i$ là nhiễu tổng hợp (gió + sai số mô hình) được kẹp an toàn và đưa trở lại công thức $u_p, u_e$ để triệt tiêu nhiễu.
+\end{enumerate}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=645]
+// File: firmware_esp32/rl_critic_controller.hpp (ESO goc thai do)
+// 1. Loc tre co cau chap hanh sau bao hoa (Anti-windup)
+const float alpha_att_lag = std::min(1.0f, dt / RLCritic::ESO_ACT_LAG_ATT_S);
+for (int i = 0; i < 3; ++i) {
+    ue_eff_[i] += (ue_applied[i] - ue_eff_[i]) * alpha_att_lag;
+}
+
+// 2. Cap nhat ESO bac 3 (c1=6, c2=11, c3=6, eps=0.55)
+const float eps = RLCritic::ESO_EPS_ATT;
+const float c1_e = RLCritic::ESO_C1 / eps;
+const float c2_e2 = RLCritic::ESO_C2 / (eps * eps);
+const float c3_e3 = RLCritic::ESO_C3 / (eps * eps * eps);
+
+for (int i = 0; i < 3; ++i) {
+    float err_hat  = (i == 2) ? DroneMath::normalize_angle(eta_hat_[2] - cur_eta[2])
+                              : (eta_hat_[i] - cur_eta[i]);
+    float eta_1dot = deta_hat_[i] - c1_e * err_hat;
+    float eta_2dot = ((-cor[i] + ue_eff_[i]) / J[i]) - c2_e2 * err_hat + dis_eta_hat_[i];
+    float d_dis    = -c3_e3 * err_hat;
+
+    eta_hat_[i]     += eta_1dot * dt;
+    deta_hat_[i]    += eta_2dot * dt;
+    dis_eta_hat_[i] += d_dis * dt;
+}
+\end{lstlisting}
+\end{minipage}
+
+\newpage
+
+% ------------------------------------------------------------------------------
+\section{Thuật toán 3: Bộ điều khiển PID cổ điển và Bảng so sánh 3 thuật toán}
+% ------------------------------------------------------------------------------
+
+\subsection{Cấu trúc PID chuẩn đối chứng (\texttt{firmware\_esp32.ino})}
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\vspace{0pt}
+\textbf{Ý tưởng \& Công thức PID:}
+\begin{itemize}
+    \item \textbf{Ý tưởng:} Giữ cố định 3 hệ số $K_P$ (kéo theo độ lệch hiện tại), $K_I$ (cộng dồn sai số tĩnh để chống gió đều/sụt áp) và $K_D$ (hãm tốc độ xoay $p, q, r$ chống vọt lố).
+    \item \textbf{Công thức mô-men Roll/Pitch:}
+    \[
+    \tau = K_P(\eta_d - \eta) + K_I \int (\eta_d - \eta)\,dt - K_D \omega
+    \]
+    (tích phân được giới hạn bởi \path{INT_ATT_LIMIT} để chống bão hòa).
+    \item \textbf{Hạn chế:} Hệ số $K_P, K_I, K_D$ cố định, không tự thích nghi khi khối lượng/gió đổi mạnh và không có bộ ước lượng nhiễu ESO như Thuật toán 2.
+\end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.52\textwidth}
+\vspace{0pt}
+\begin{lstlisting}[language=C++, firstnumber=725]
+// File: firmware_esp32/firmware_esp32.ino
+float err_roll = target_r_rad - s.roll;
+g_int_roll = DroneMath::clamp(g_int_roll + err_roll * Timing::DT,
+                              -Attitude::INT_ATT_LIMIT, Attitude::INT_ATT_LIMIT);
+tau_roll = Attitude::KP_ATT * err_roll + Attitude::KI_ATT * g_int_roll - Attitude::KD_ATT * s.p;
+
+float err_pitch = target_p_rad - s.pitch;
+g_int_pitch = DroneMath::clamp(g_int_pitch + err_pitch * Timing::DT,
+                               -Attitude::INT_ATT_LIMIT, Attitude::INT_ATT_LIMIT);
+tau_pitch = Attitude::KP_ATT * err_pitch + Attitude::KI_ATT * g_int_pitch - Attitude::KD_ATT * s.q;
+
+float err_yaw = DroneMath::normalize_angle(g_target_yaw_rad - s.yaw);
+tau_yaw = Attitude::KP_YAW * err_yaw - Attitude::KD_YAW * s.r;
+\end{lstlisting}
+\end{minipage}
+
+\vspace{1.2em}
+\noindent
+\begin{table}[h!]
+\centering
+\caption{Bảng so sánh tổng hợp 3 thuật toán điều khiển trên ESP32}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}p{2.7cm}p{3.2cm}p{3.5cm}X@{}}
+\toprule
+\textbf{Tiêu chí} & \textbf{Thuật toán 1: ITSMC} & \textbf{Thuật toán 2: RL Critic + ESO} & \textbf{Thuật toán 3: PID cổ điển} \\
+\midrule
+\textbf{Phạm vi điều khiển} & Độ cao $Z$ + Góc thái độ ($X, Y$ dùng \path{PositionController}) & Toàn bộ Vị trí 3D ($X,Y,Z$) + Góc thái độ (Roll/Pitch/Yaw) & Độ cao $Z$ + Góc thái độ ($X, Y$ dùng \path{PositionController}) \\
+\textbf{Cơ chế chống gió} & Ép cứng bằng mặt trượt phi tuyến $k_3 \tanh(s/\phi_b)$ & \textbf{ESO bậc 3} ước lượng trực tiếp nhiễu gió và trừ thẳng & Tích phân $K_I \int e\,dt$ (phản ứng chậm hơn khi gió giật) \\
+\textbf{Tính thích nghi} & Tham số cố định ($k_{11}, k_{12}, k_2, k_3$) & Trọng số $W_p, W_e$ tự tinh chỉnh online 200 Hz theo sai số Bellman $e_B$ & Hệ số cố định ($K_P, K_I, K_D$) \\
+\textbf{Phụ thuộc mô hình} & Thấp (chỉ cần hệ số chuẩn hóa $b_{\text{inv}}$) & Cao hơn (cần $m, J, \tau_{\text{lag}}$ của X500 cho ESO và Riccati) & Không cần mô hình vật lý \\
+\textbf{Tệp nguồn chính} & \path{itsmc_controller.hpp} & \path{rl_critic_controller.hpp} & \path{firmware_esp32.ino} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\end{document}
